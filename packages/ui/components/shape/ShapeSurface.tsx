@@ -201,7 +201,7 @@ function shapeBoxPart(target: { el: HTMLElement; view: string | null; id: string
   return { name: Array.from(name).slice(0, 600).join(''), ...(code ? { code } : {}) };
 }
 
-export function ShapeSurface({ host, id, onClose, onCode, CodeGuide, CodeHoverCard, renderThread, readFirst = false, initialView, initialPanel, onNavigate, headStart, headSide, codeView = true, review = null, boxSelect, darkContrast = false, stackBadges = false, dockRef, pillRef }: ShapeSurfaceProps) {
+export function ShapeSurface({ renderMermaid, host, id, onClose, onCode, CodeGuide, CodeHoverCard, renderThread, readFirst = false, initialView, initialPanel, onNavigate, headStart, headSide, codeView = true, review = null, boxSelect, darkContrast = false, stackBadges = false, dockRef, pillRef }: ShapeSurfaceProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [rootEl, setRootEl] = useState<HTMLDivElement | null>(null);
   const attachRoot = useCallback((el: HTMLDivElement | null) => {
@@ -1304,6 +1304,7 @@ export function ShapeSurface({ host, id, onClose, onCode, CodeGuide, CodeHoverCa
           <div className="shp-sidep-body">
             {panel === 'ask' && (
               <DocumentAIChatPanel
+                renderMermaid={renderMermaid}
                 messages={entries}
                 isCreatingSession={false}
                 isStreaming={streaming}

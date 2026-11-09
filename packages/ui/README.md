@@ -607,6 +607,28 @@ const store = new ChatWindowStore({ initialGeometry: saved, onGeometryChange: sa
 - **Keys.** The frame listens to no key. `useChatFrameKeys` is the opt-in map (Mod+J, Shift+Mod+J, Escape). `useChatFrameFocusReturn` returns focus to the element wearing `data-chat-launcher` when focus was in the window.
 - **Composer.** It is controlled and set `onChange` synchronously, or typing and IME input are lost. `onSend` runs while `busy` and with an empty box, so guard those. Enter does not bubble past the React root, so a bubble listener on `window` or `document` does not hear it; capture listeners and native listeners on ancestors still do. Other keys bubble as usual, so an app's own Escape handling still sees them. On a touch keyboard pass `sendOnEnter={false}`: it has no Shift, so otherwise no message can have a second line.
 - **Text.** `ChatTranscript` draws text parts as sanitized markdown. Nothing in message text can carry a class, a `data-*` or `aria-*` attribute, a script or, unless you pass `richMarkdown`, an image, and links open in a new tab with `noopener`. Raw HTML in an agent's text shows as text; the one exception is `<br>`, which stays a line break. Where the sanitizer fails its check on first use, or the text is past a work limit (length, parse time, the size of the HTML it makes, or thousands of characters past ASCII in one paragraph or code block, which is what makes layout slow), the message goes out as plain text. The time limit is a check, not a wall, and it is wall-clock, so a text near it can draw either way. A run of text too costly to parse, such as one holding a very long word, is local: it goes out as literal text and the rest stays formatted, and so does a table with too many cells. Long lines of code in a code block cost nothing. Mark a part `state: 'streaming'` while it grows: a text too costly to draw on every delta then stays plain, and redraws only as it grows by an eighth, so its last words can lag. It renders in full once the part stops streaming or the turn ends. A person can send while an answer streams: keep `status` at `streaming` and the answer above their message keeps streaming, and put a turn that is over in `stopped`. Rendering never throws.
+- **Mermaid fences.** `renderMermaid` optionally draws completed Mermaid fences in assistant text. The default keeps ordinary code blocks and loads no diagram engine. `ChatMarkdown` and `ChatMessageView` accept the same prop. A host's `ChatMarkdown` inside `renderPart` inherits the transcript's renderer; `null` disables it locally. Person text with `literalHtml` keeps code blocks.
+
+  ```tsx
+  import { ChatTranscript, type ChatMermaidRenderer } from "@plannotator/ui/components/chat";
+  import { renderChatMermaid } from "@plannotator/ui/components/ai/ChatMermaidBlock";
+
+  <ChatTranscript
+    messages={messages}
+    status={status}
+    agentName="Agent"
+    renderMermaid={renderChatMermaid}
+  />
+  ```
+
+  - The callback is `(fence: { id: string; source: string }, fallback: ReactNode) => ReactNode`. Return `fallback` to keep the sanitized code block. The host owns renderer loading. The supplied adapter lazily loads ui's existing read-only diagram viewer and runtime, using the host's `ThemeProvider`.
+  - Import the adapter explicitly. The common chat entry imports no diagram engine. Code-review hosts must supply their server-URL adapter instead of importing this UI adapter.
+  - Marked identifies fences, including nested lists and quotes, backticks and tildes. The first info word must be `mermaid`, ignoring case. Inline code, indented code and other languages remain unchanged.
+  - While streaming, a closing line needs a newline before the diagram starts. A finished or stopped turn accepts a close at EOF. Unclosed fences remain code. Keep `status`, part `state` and `stopped` current as described under **Text**.
+  - A fence's id and mounted viewer stay stable when later prose arrives. A source replacement resets that viewer; theme changes use its existing redraw behavior. Loading and rendering failures retain readable source. Stale asynchronous results cannot replace the current diagram.
+  - Existing Markdown sanitization and work limits still apply. Only trusted React output supplies diagram markup; message HTML cannot create diagram slots. Diagram source still pays its original code-block and HTML costs.
+  - The older formatter also accepts `renderChatMarkdown(text, { streaming, renderMermaid })` from `utils/aiChatFormat`. Its one-argument behavior remains unchanged. `chatMarkdownToHtml` still returns ordinary Markdown HTML for string consumers and copying.
+
 - **Rich markdown.** `richMarkdown` on `ChatTranscript` (also on `ChatMessageView` and `ChatMarkdown`, and `richMarkdownHtml(text, { literalHtml })` for the string) is the one switch for what `marked` writes for GFM and the default leaves out: images, strikethrough, task checkboxes, link titles and list start numbers. It is off by default and Plannotator never turns it on, because **an image loads a remote address from model text**, which tells that server the person's IP and your origin. **The address can carry anything the model has read**, so text injected into what it reads can send that out with no click: set a CSP `img-src` to the hosts you trust. A relative address loads from your own origin, with your cookies, and `SameSite` does not stop it, so check that no GET route of yours changes anything.
 
   ```tsx

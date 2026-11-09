@@ -104,6 +104,7 @@ import { useCodeAnnotationDraft, type CodeDraftMergeItems, type CodeDraftTargetS
 import { useGitAdd } from './hooks/useGitAdd';
 import { generateId } from './utils/generateId';
 import { parseDiagramEngineUrls } from './utils/diagramEngine';
+import { chatMermaidRenderer } from './components/ChatMermaidBlock';
 import type { DiagramEngineUrls } from './utils/diagramEngineContract';
 import type { SuggestionHunk } from './edit/deriveSuggestions';
 import type { EditSelectionComment } from './edit/useEditSession';
@@ -815,6 +816,7 @@ const ReviewApp: React.FC = () => {
   // the diagram engine (see utils/diagramEngine). Absent (an older server, a
   // host that ships no engine, the demo): diagram fences show as code.
   const [diagramEngine, setDiagramEngine] = useState<DiagramEngineUrls | null>(null);
+  const renderChatMermaid = useMemo(() => chatMermaidRenderer(diagramEngine), [diagramEngine]);
   // Session-constant capability advert from `/api/diff`: 'patch' means the
   // diff is caller-supplied bytes (`plannotator review --patch-file`) with no
   // repository behind it. ABSENT reads as 'vcs', so an old server keeps every
@@ -6733,6 +6735,7 @@ const ReviewApp: React.FC = () => {
                 prMetadata={prMetadata}
                 aiAvailable={aiAvailable}
                 aiMessages={aiMessages}
+                renderMermaid={renderChatMermaid}
                 isAICreatingSession={aiIsCreatingSession}
                 isAIStreaming={aiIsStreaming}
                 onAIStop={abortAI}

@@ -72,4 +72,5 @@ export {
   type ChatTranscriptProps,
 } from './ChatTranscript';
 export { chatMarkdownHtml, personMarkdownHtml, richMarkdownHtml } from './chatMarkdown';
+export type { ChatMermaidRenderer } from '../../utils/chatMermaid';
 export { FOCUS_RING, floatingDialogChrome } from './chatRecipes';

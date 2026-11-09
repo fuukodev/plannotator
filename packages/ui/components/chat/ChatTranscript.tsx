@@ -3,7 +3,9 @@ import type * as React from 'react';
 
 import { usePrefersReducedMotion } from '../../hooks/usePrefersReducedMotion';
 import { cn } from '../../lib/utils';
-import { chatTextRenderer } from './chatMarkdown';
+import { chatTextContentRenderer } from './chatMarkdown';
+import type { ChatMermaidRenderer } from '../../utils/chatMermaid';
+import { ChatMermaidContent } from '../ai/ChatMermaidContent';
 import { FOCUS_RING } from './chatRecipes';
 
 /** The status of the turn in progress. */
@@ -63,14 +65,16 @@ export function chatTurnHasOutput(message: ChatMessage, reducedMotion = false): 
 
 const BODY_PROSE = cn(
   'min-w-0 text-sm text-foreground [overflow-wrap:anywhere]',
-  '[&_p]:mb-2 [&_p:last-child]:mb-0',
-  '[&_pre]:mb-2 [&_pre]:overflow-x-auto',
-  '[&_ol]:mb-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_ul]:mb-2 [&_ul]:list-disc [&_ul]:pl-5 [&_li]:mb-1',
-  '[&_code]:font-mono [&_code]:text-xs [&_code]:text-primary',
-  '[&_strong]:font-semibold',
-  '[&_blockquote]:mb-2 [&_blockquote]:border-l-2 [&_blockquote]:border-border-subtle [&_blockquote]:pl-2.5 [&_blockquote]:italic [&_blockquote]:text-muted-foreground',
-  '[&_a]:text-primary',
-  '[&_h1]:mb-1 [&_h1]:text-base [&_h1]:font-semibold [&_h2]:mb-1 [&_h2]:text-sm [&_h2]:font-semibold',
+  // :where keeps the old specificity while leaving diagram labels, controls
+  // and source panes to the diagram viewer's own styles.
+  '[&_p:where(:not([data-chat-mermaid]_*))]:mb-2 [&_p:last-child:where(:not([data-chat-mermaid]_*))]:mb-0',
+  '[&_pre:where(:not([data-chat-mermaid]_*))]:mb-2 [&_pre:where(:not([data-chat-mermaid]_*))]:overflow-x-auto',
+  '[&_ol:where(:not([data-chat-mermaid]_*))]:mb-2 [&_ol:where(:not([data-chat-mermaid]_*))]:list-decimal [&_ol:where(:not([data-chat-mermaid]_*))]:pl-5 [&_ul:where(:not([data-chat-mermaid]_*))]:mb-2 [&_ul:where(:not([data-chat-mermaid]_*))]:list-disc [&_ul:where(:not([data-chat-mermaid]_*))]:pl-5 [&_li:where(:not([data-chat-mermaid]_*))]:mb-1',
+  '[&_code:where(:not([data-chat-mermaid]_*))]:font-mono [&_code:where(:not([data-chat-mermaid]_*))]:text-xs [&_code:where(:not([data-chat-mermaid]_*))]:text-primary',
+  '[&_strong:where(:not([data-chat-mermaid]_*))]:font-semibold',
+  '[&_blockquote:where(:not([data-chat-mermaid]_*))]:mb-2 [&_blockquote:where(:not([data-chat-mermaid]_*))]:border-l-2 [&_blockquote:where(:not([data-chat-mermaid]_*))]:border-border-subtle [&_blockquote:where(:not([data-chat-mermaid]_*))]:pl-2.5 [&_blockquote:where(:not([data-chat-mermaid]_*))]:italic [&_blockquote:where(:not([data-chat-mermaid]_*))]:text-muted-foreground',
+  '[&_a:where(:not([data-chat-mermaid]_*))]:text-primary',
+  '[&_h1:where(:not([data-chat-mermaid]_*))]:mb-1 [&_h1:where(:not([data-chat-mermaid]_*))]:text-base [&_h1:where(:not([data-chat-mermaid]_*))]:font-semibold [&_h2:where(:not([data-chat-mermaid]_*))]:mb-1 [&_h2:where(:not([data-chat-mermaid]_*))]:text-sm [&_h2:where(:not([data-chat-mermaid]_*))]:font-semibold',
 );
 
 /** False once the turn around a text has ended. A part's own `state` cannot say
@@ -85,6 +89,9 @@ const RichMarkdownContext = createContext(false);
 /** The transcript's `keepUserBlankLines`, for the same reason. */
 const KeepUserBlankLinesContext = createContext(false);
 
+/** Opt-in host renderer, also inherited by a host's own ChatMarkdown. */
+const MermaidRendererContext = createContext<ChatMermaidRenderer | null>(null);
+
 /** One text part as sanitized markdown, memoized on its text. */
 export const ChatMarkdown = memo(function ChatMarkdown({
   text,
@@ -92,6 +99,7 @@ export const ChatMarkdown = memo(function ChatMarkdown({
   literalHtml = false,
   richMarkdown,
   keepBlankLines,
+  renderMermaid,
   messageId,
   role,
   partIndex,
@@ -113,6 +121,10 @@ export const ChatMarkdown = memo(function ChatMarkdown({
    * No effect on an agent's text. Absent: what `ChatTranscript`'s
    * `keepUserBlankLines` says, or off. */
   keepBlankLines?: boolean;
+  /** Draw completed Mermaid fences in an agent's text. Undefined inherits the
+   * transcript's renderer; null keeps code. The host owns lazy loading. Never
+   * applies to literalHtml (person text). See ChatMermaidRenderer. */
+  renderMermaid?: ChatMermaidRenderer | null;
   /** Where this text sits, as scalars so `memo` short-circuits. A host reads
    * them back off the element to anchor a selection. */
   messageId?: string;
@@ -132,21 +144,23 @@ export const ChatMarkdown = memo(function ChatMarkdown({
   const rich = richMarkdown ?? transcriptRich;
   const transcriptKeep = useContext(KeepUserBlankLinesContext);
   const keep = literalHtml && (keepBlankLines ?? transcriptKeep);
-  const render = useMemo(() => chatTextRenderer(literalHtml, rich, keep), [literalHtml, rich, keep]);
-  const html = useMemo(() => render(shown, live), [render, shown, live]);
-  // One `{__html}` object per html string: React re-sets innerHTML whenever
-  // that prop's identity changes, which would collapse a live selection.
-  const inner = useMemo(() => ({ __html: html }), [html]);
+  const inheritedMermaid = useContext(MermaidRendererContext);
+  const mermaid = literalHtml ? null : renderMermaid === undefined ? inheritedMermaid : renderMermaid;
+  const diagrams = mermaid !== null;
+  const render = useMemo(() => chatTextContentRenderer(literalHtml, rich, keep, diagrams), [literalHtml, rich, keep, diagrams]);
+  const markup = useMemo(() => render(shown, live), [render, shown, live]);
   return (
-    <div
-      ref={rootRef}
+    <ChatMermaidContent
+      rootRef={rootRef}
+      source={shown}
+      markup={markup}
+      renderMermaid={mermaid}
       className={BODY_PROSE}
       data-text-part={messageId === undefined ? undefined : ''}
       data-message-id={messageId}
       data-message-role={role}
       data-part-index={partIndex}
       data-annotatable={annotatable === undefined ? undefined : String(annotatable)}
-      dangerouslySetInnerHTML={inner}
     />
   );
 });
@@ -201,6 +215,7 @@ export function ChatMessageView<Part extends ChatMessagePart = ChatMessagePart>(
   footer,
   richMarkdown,
   keepUserBlankLines,
+  renderMermaid,
 }: {
   message: ChatMessage<Part>;
   agentName: string;
@@ -224,9 +239,13 @@ export function ChatMessageView<Part extends ChatMessagePart = ChatMessagePart>(
   /** `ChatMarkdown`'s `keepBlankLines` for the person's text parts. Absent:
    * what `ChatTranscript` was told, or off. */
   keepUserBlankLines?: boolean;
+  /** See ChatMarkdown. Undefined inherits; null keeps Mermaid as code. */
+  renderMermaid?: ChatMermaidRenderer | null;
 }) {
   const isUser = message.role === 'user';
+  const inheritedMermaid = useContext(MermaidRendererContext);
   return (
+    <MermaidRendererContext.Provider value={renderMermaid === undefined ? inheritedMermaid : renderMermaid}>
     <div className="flex flex-col gap-1.5" data-message-role={message.role}>
       <div className="flex items-center gap-2 text-xs">
         {isUser ? userMark : agentMark}
@@ -261,6 +280,7 @@ export function ChatMessageView<Part extends ChatMessagePart = ChatMessagePart>(
         {footer}
       </div>
     </div>
+    </MermaidRendererContext.Provider>
   );
 }
 
@@ -309,6 +329,11 @@ export interface ChatTranscriptProps<Part extends ChatMessagePart = ChatMessageP
    * numbers in text parts, a host's own `ChatMarkdown` included. Images load
    * remote addresses from model text, so it is off unless a host turns it on. */
   readonly richMarkdown?: boolean;
+  /** Opt-in renderer for completed Mermaid fences in assistant text, including
+   * a host's own ChatMarkdown. Omitted/null: ordinary code, no engine loads.
+   * Streaming waits for a newline after the close; a finished/stopped turn
+   * accepts an EOF close. Unclosed fences stay code. */
+  readonly renderMermaid?: ChatMermaidRenderer | null;
   /** Draw the person's messages as typed, as the Inbox draws a person's reply:
    * each line break stays a line break, and a paragraph after 2 or more blank
    * lines keeps them (up to 10) instead of one paragraph gap. A host's own
@@ -368,6 +393,7 @@ export function ChatTranscript<Part extends ChatMessagePart = ChatMessagePart>({
   overlay,
   richMarkdown = false,
   keepUserBlankLines = false,
+  renderMermaid = null,
 }: ChatTranscriptProps<Part>) {
   // `submitted` is set the moment a message is sent, and a stream's start can
   // push an assistant message with no parts without changing the status. The
@@ -441,7 +467,7 @@ export function ChatTranscript<Part extends ChatMessagePart = ChatMessagePart>({
       {messages.length === 0
         ? empty
         : messages.map((message, index) => {
-            const live = index === arrivingAt;
+            const live = index === arrivingAt && !stopped?.has(message.id);
             const custom = renderMessage?.(message, index);
             return (
               <TurnLiveContext.Provider key={message.id} value={live}>
@@ -482,7 +508,9 @@ export function ChatTranscript<Part extends ChatMessagePart = ChatMessagePart>({
   );
   return (
     <RichMarkdownContext.Provider value={richMarkdown}>
-      <KeepUserBlankLinesContext.Provider value={keepUserBlankLines}>{pane}</KeepUserBlankLinesContext.Provider>
+      <KeepUserBlankLinesContext.Provider value={keepUserBlankLines}>
+        <MermaidRendererContext.Provider value={renderMermaid}>{pane}</MermaidRendererContext.Provider>
+      </KeepUserBlankLinesContext.Provider>
     </RichMarkdownContext.Provider>
   );
 }

@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { ChatFrame, ChatTranscript, type ChatMessage, type ChatStatus, type ChatTextPart, type ChatWindowStore } from '@plannotator/ui/components/chat';
 import { SessionAskActions, type SessionAskAction } from '@plannotator/ui/components/ai/SessionAskNotice';
+import { renderChatMermaid } from '@plannotator/ui/components/ai/ChatMermaidBlock';
 import { HostMark } from '@plannotator/ui/components/inbox-thread/icons';
 import { useAIChat } from '@plannotator/ui/hooks/useAIChat';
 import { SESSION_ASK_ERROR_CODES } from '@plannotator/ui/utils/aiProvider';
@@ -294,6 +295,7 @@ export function AskChat({ threadId, store, model, picked, phone, focusRequest, s
       {() => (
         <>
           <ChatTranscript<ChatTextPart>
+            renderMermaid={renderChatMermaid}
             messages={messages}
             status={status}
             agentName={name}

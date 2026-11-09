@@ -10,6 +10,7 @@
  */
 import { useMemo } from 'react';
 import { ShapeSurface, type ShapeBoxOptions } from '@plannotator/ui/components/shape';
+import { renderChatMermaid } from '@plannotator/ui/components/ai/ChatMermaidBlock';
 import { OpenInCodeSpans } from '../components/OpenIn';
 import { markShapeDock, markShapePill } from '../pageMarks';
 import type { ShapeBoardProps } from './types';
@@ -37,6 +38,7 @@ export default function ShapeBoard({ host, id, onClose, onCode, renderThread, in
   return (
     <OpenInCodeSpans scope={{ shape: id }} on={!!host.fileAction}>
     <ShapeSurface
+      renderMermaid={renderChatMermaid}
       key={id}
       host={host}
       id={id}

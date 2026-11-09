@@ -12,6 +12,7 @@ import { detectLanguage } from '../utils/detectLanguage';
 import { renderInlineMarkdown } from '../utils/renderInlineMarkdown';
 import { FileNameChip } from './FileNameChip';
 import { AITab } from './AITab';
+import type { ChatMermaidRenderer } from '@plannotator/ui/utils/chatMermaid';
 import { AgentsTab, type AgentLaunchParams, type AgentLaunchResult } from '@plannotator/ui/components/AgentsTab';
 import type { PRMetadata } from '@plannotator/shared/pr-types';
 import { OverlayScrollArea } from '@plannotator/ui/components/OverlayScrollArea';
@@ -70,6 +71,8 @@ interface ReviewSidebarProps {
   prMetadata?: PRMetadata | null;
   // AI props
   aiAvailable?: boolean;
+  /** The host renderer for Mermaid answer fences; absent keeps source code. */
+  renderMermaid?: ChatMermaidRenderer | null;
   aiMessages?: AIChatEntry[];
   isAICreatingSession?: boolean;
   isAIStreaming?: boolean;
@@ -279,6 +282,7 @@ export const ReviewSidebar: React.FC<ReviewSidebarProps> = /* React.memo */({
   onDeleteCommentAnnotation,
   prMetadata,
   aiAvailable = false,
+  renderMermaid,
   aiMessages = [],
   isAICreatingSession = false,
   isAIStreaming = false,
@@ -821,6 +825,7 @@ export const ReviewSidebar: React.FC<ReviewSidebarProps> = /* React.memo */({
           {/* AI tab */}
           {activeTab === 'ai' && (
             <AITab
+              renderMermaid={renderMermaid}
               messages={aiMessages}
               isCreatingSession={isAICreatingSession}
               isStreaming={isAIStreaming}

@@ -7,6 +7,7 @@
  * (SPEC.md §3, "Host seam"); the dev harness passes an in-memory one.
  */
 import type { ShapeBoxSelection, ShapeReadAsset } from './boxSelect';
+import type { ChatMermaidRenderer } from '../../utils/chatMermaid';
 import type { ComponentType, ReactNode, Ref } from 'react';
 import type { ShapeCodeTarget, ShapeNote, ShapeNoteInput, ShapeRecord, ShapeVersion, ShapeViewId } from '@plannotator/core/shape';
 
@@ -195,6 +196,8 @@ export interface ShapeSurfaceReview {
 }
 
 export interface ShapeSurfaceProps {
+  /** Draw complete Mermaid fences in the Ask panel. Absent: keep them as code. */
+  renderMermaid?: ChatMermaidRenderer | null;
   host: ShapeHost;
   id: string;
   /** The × at the title's right closes Shape (the Inbox: back to the thread). Absent: no close button. */

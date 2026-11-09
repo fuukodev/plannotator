@@ -1,6 +1,18 @@
 import { createElement, type ReactNode } from 'react';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
+import { ChatMermaidCollector, chatMermaidOptions, type ChatMermaidRenderer } from './chatMermaid';
+import { ChatMermaidContent } from '../components/ai/ChatMermaidContent';
+
+export type { ChatMermaidRenderer } from './chatMermaid';
+
+/** Optional diagram support. Omit `renderMermaid` to retain ordinary code
+ * blocks. While streaming, a fence's closing line needs a newline; at turn
+ * end an EOF close is complete too. An unclosed fence always remains code. */
+export interface ChatMarkdownOptions {
+  readonly streaming?: boolean;
+  readonly renderMermaid?: ChatMermaidRenderer | null;
+}
 
 /**
  * What DOMPurify keeps of an Ask AI answer. Every tag and attribute marked
@@ -34,17 +46,25 @@ export function chatMarkdownToHtml(text: string): string {
  * answer is shown as plain text, line breaks kept, as a React text child
  * (React escapes it).
  */
-export function renderChatMarkdown(text: string): ReactNode {
+export function renderChatMarkdown(text: string, options?: ChatMarkdownOptions): ReactNode {
   try {
-    const clean = DOMPurify.sanitize(chatMarkdownToHtml(text), {
+    const sanitize = (html: string) => DOMPurify.sanitize(html, {
       ALLOWED_TAGS: [...CHAT_SANITIZE_CONFIG.ALLOWED_TAGS],
       ALLOWED_ATTR: [...CHAT_SANITIZE_CONFIG.ALLOWED_ATTR],
       ALLOW_DATA_ATTR: CHAT_SANITIZE_CONFIG.ALLOW_DATA_ATTR,
       ALLOW_ARIA_ATTR: CHAT_SANITIZE_CONFIG.ALLOW_ARIA_ATTR,
     });
+    if (options?.renderMermaid) {
+      const collector = new ChatMermaidCollector(options.streaming ?? false, text);
+      const html = marked.parse(text, chatMermaidOptions({ ...marked.defaults, async: false, breaks: true }, collector)) as string;
+      const markup = collector.sanitize(html, sanitize);
+      return createElement(ChatMermaidContent, {
+        className: 'ai-markdown', source: text, markup, renderMermaid: options.renderMermaid,
+      });
+    }
     return createElement('div', {
       className: 'ai-markdown',
-      dangerouslySetInnerHTML: { __html: clean },
+      dangerouslySetInnerHTML: { __html: sanitize(chatMarkdownToHtml(text)) },
     });
   } catch {
     return createElement(

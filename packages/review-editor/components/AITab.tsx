@@ -2,6 +2,7 @@ import React, { useRef, useEffect, useState, useMemo, useCallback, memo } from '
 import type { AIChatEntry, PendingPermission } from '../hooks/useAIChat';
 import { hasPendingBusyChoice } from '@plannotator/ui/hooks/useAIChat';
 import { renderChatMarkdown } from '../utils/renderChatMarkdown';
+import type { ChatMermaidRenderer } from '@plannotator/ui/utils/chatMermaid';
 import { formatLineRange } from '../utils/formatLineRange';
 import { formatRelativeTime } from '../utils/formatRelativeTime';
 import { FileNameChip } from './FileNameChip';
@@ -39,6 +40,8 @@ interface AITabProps {
   /** Start a new chat: clear the tab so the next question starts a fresh AI
    *  session (#1981). Absent: no button. */
   onNewChat?: () => void;
+  /** Draw complete Mermaid answer fences with the host engine. Absent: code. */
+  renderMermaid?: ChatMermaidRenderer | null;
 }
 
 interface FileGroup {
@@ -52,6 +55,8 @@ function getQuestionScope(q: AIChatEntry['question']): 'general' | 'file' | 'lin
   return 'line';
 }
 
+/** Group review questions by file and show their streamed answers. Mermaid
+ * rendering uses the optional host callback, without bundling an engine. */
 export const AITab: React.FC<AITabProps> = ({
   messages,
   isCreatingSession,
@@ -70,6 +75,7 @@ export const AITab: React.FC<AITabProps> = ({
   onSessionAskAction,
   askSessionSetupHint,
   onNewChat,
+  renderMermaid,
 }) => {
   // A session that is never interrupted (T3 Code): Stop only stops listening.
   const listenOnly = hasNonInterruptibleSession(aiProviders);
@@ -253,7 +259,7 @@ export const AITab: React.FC<AITabProps> = ({
               {isExpanded && (
                 <div className="ml-3 border-l border-border/30 pl-2 space-y-2 mt-1">
                   {fileMessages.map(({ question, response }) => (
-                    <QAPair key={question.id} question={question} response={response} canInterrupt={!listenOnly} onScrollToLines={onScrollToLines} onSessionAskAction={onSessionAskAction} />
+                    <QAPair key={question.id} renderMermaid={renderMermaid} question={question} response={response} canInterrupt={!listenOnly} onScrollToLines={onScrollToLines} onSessionAskAction={onSessionAskAction} />
                   ))}
                 </div>
               )}
@@ -273,7 +279,7 @@ export const AITab: React.FC<AITabProps> = ({
             )}
             <div className="space-y-2">
               {generalMessages.map(({ question, response }) => (
-                <QAPair key={question.id} question={question} response={response} canInterrupt={!listenOnly} onScrollToLines={onScrollToLines} onSessionAskAction={onSessionAskAction} />
+                <QAPair key={question.id} renderMermaid={renderMermaid} question={question} response={response} canInterrupt={!listenOnly} onScrollToLines={onScrollToLines} onSessionAskAction={onSessionAskAction} />
               ))}
             </div>
           </div>
@@ -396,11 +402,12 @@ const QAPair = memo<{
   onScrollToLines: AITabProps['onScrollToLines'];
   onSessionAskAction?: AITabProps['onSessionAskAction'];
   canInterrupt?: boolean;
-}>(({ question, response, onScrollToLines, onSessionAskAction, canInterrupt }) => {
+  renderMermaid?: ChatMermaidRenderer | null;
+}>(({ question, response, onScrollToLines, onSessionAskAction, canInterrupt, renderMermaid }) => {
   const scope = getQuestionScope(question);
   const renderedResponse = useMemo(
-    () => response.text ? renderChatMarkdown(response.text) : null,
-    [response.text],
+    () => response.text ? renderChatMarkdown(response.text, { streaming: response.isStreaming, renderMermaid }) : null,
+    [response.text, response.isStreaming, renderMermaid],
   );
 
   return (

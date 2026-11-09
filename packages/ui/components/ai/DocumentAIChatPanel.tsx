@@ -2,6 +2,7 @@ import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from '
 import { hasPendingBusyChoice, type AIChatEntry, type PendingPermission } from '../../hooks/useAIChat';
 import { findSessionBridge, hasNonInterruptibleSession, type AIProviderOption } from '../../utils/aiProvider';
 import { formatRelativeTime, renderChatMarkdown } from '../../utils/aiChatFormat';
+import type { ChatMermaidRenderer } from '../../utils/chatMermaid';
 import { OverlayScrollArea } from '../OverlayScrollArea';
 import { SparklesIcon } from '../SparklesIcon';
 import { AIProviderBar } from './AIProviderBar';
@@ -33,6 +34,8 @@ interface DocumentAIChatPanelProps {
    * while an answer is in flight. Absent: no button, the panel renders as before.
    */
   onNewChat?: () => void;
+  /** Draw complete Mermaid fences in answers. Absent: keep them as code. */
+  renderMermaid?: ChatMermaidRenderer | null;
 }
 
 function truncate(text: string, max = 180): string {
@@ -67,6 +70,8 @@ function formatToolInput(toolName: string, input: Record<string, unknown>): stri
   }
 }
 
+/** Show document questions, streamed answers and provider actions. Diagram
+ * rendering is supplied by the host; omitted renderers retain ordinary code. */
 export const DocumentAIChatPanel: React.FC<DocumentAIChatPanelProps> = ({
   messages,
   isCreatingSession,
@@ -82,6 +87,7 @@ export const DocumentAIChatPanel: React.FC<DocumentAIChatPanelProps> = ({
   askSessionSetupHint,
   hideProviderBar,
   onNewChat,
+  renderMermaid,
 }) => {
   // A session that is never interrupted (T3 Code): Stop only stops listening.
   const listenOnly = hasNonInterruptibleSession(aiProviders);
@@ -150,6 +156,7 @@ export const DocumentAIChatPanel: React.FC<DocumentAIChatPanelProps> = ({
             <DocumentQAPair
               key={entry.question.id}
               entry={entry}
+              renderMermaid={renderMermaid}
               canInterrupt={!listenOnly}
               onSessionAskAction={onSessionAskAction}
             />
@@ -201,11 +208,12 @@ const DocumentQAPair = memo<{
   entry: AIChatEntry;
   onSessionAskAction?: (questionId: string, action: SessionAskAction) => void;
   canInterrupt?: boolean;
-}>(({ entry, onSessionAskAction, canInterrupt }) => {
+  renderMermaid?: ChatMermaidRenderer | null;
+}>(({ entry, onSessionAskAction, canInterrupt, renderMermaid }) => {
   const { question, response } = entry;
   const renderedResponse = useMemo(
-    () => response.text ? renderChatMarkdown(response.text) : null,
-    [response.text],
+    () => response.text ? renderChatMarkdown(response.text, { streaming: response.isStreaming, renderMermaid }) : null,
+    [response.text, response.isStreaming, renderMermaid],
   );
   const scope = question.scope;
 

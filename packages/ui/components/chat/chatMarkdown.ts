@@ -2,6 +2,7 @@ import DOMPurify from 'dompurify';
 import { Lexer, Marked, type MarkedExtension, type Token, type Tokens } from 'marked';
 
 import { CHAT_SANITIZE_CONFIG } from '../../utils/aiChatFormat';
+import { ChatMermaidCollector, chatMermaidOptions, type ChatMermaidMarkup } from '../../utils/chatMermaid';
 
 /** The characters HTML gives meaning to, as text. */
 function escapeHtml(text: string): string {
@@ -554,7 +555,7 @@ const typedPersonMarkdown = new Marked(
   budgetExtension,
 );
 
-function parseMarkdown(markdown: Marked, source: string, streaming = false): string {
+function parseMarkdown(markdown: Marked, source: string, streaming = false, collector?: ChatMermaidCollector): string {
   deadline = Date.now() + MARKDOWN_BUDGET_MS;
   blockLimit = streaming ? MAX_NON_ASCII_IN_SMALL_BLOCK : MAX_NON_ASCII_IN_BLOCK;
   const tokens = new BoundedLexer(markdown.defaults).lex(source);
@@ -566,11 +567,13 @@ function parseMarkdown(markdown: Marked, source: string, streaming = false): str
       if (blank > 0) keptBlankLines.set(token, blank);
     });
   }
-  return markdown.parser(tokens);
+  if (collector) markdown.walkTokens(tokens, (token) => collector.observeToken(token));
+  return collector
+    ? markdown.parser(tokens, chatMermaidOptions(markdown.defaults, collector))
+    : markdown.parser(tokens);
 }
 
-interface RenderedMessage {
-  readonly html: string;
+interface RenderedMessage extends ChatMermaidMarkup {
   /** Too costly to draw again on every delta of a stream. */
   readonly spent: boolean;
 }
@@ -582,17 +585,21 @@ function renderMessage(
   source: string,
   streaming: boolean,
   rich = false,
+  mermaid = false,
 ): RenderedMessage {
   const sanitize = sanitizerThatWorks(rich);
   if (sanitize === null || source.length > MAX_TEXT_CHARS) {
     return { html: asPlainText(source), spent: true };
   }
   try {
-    const html = parseMarkdown(markdown, source, streaming);
+    const collector = mermaid ? new ChatMermaidCollector(streaming, source) : undefined;
+    const html = parseMarkdown(markdown, source, streaming, collector);
     const limit = streaming ? MAX_STREAMED_HTML_CHARS : MAX_HTML_CHARS;
-    if (html.length > limit) return { html: asPlainText(source), spent: true };
-    const clean = sanitize(html);
-    return { html: clean, spent: Date.now() > deadline };
+    // Replacing a long code block with a short marker must not evade the
+    // existing HTML budget (notably for code full of escaped ampersands).
+    if (html.length + (collector?.omittedHtmlChars ?? 0) > limit) return { html: asPlainText(source), spent: true };
+    const markup = collector ? collector.sanitize(html, sanitize) : { html: sanitize(html) };
+    return { ...markup, spent: Date.now() > deadline };
   } catch {
     return { html: asPlainText(source), spent: true };
   }
@@ -630,17 +637,30 @@ export function chatTextRenderer(
   rich = false,
   keepBlankLines = false,
 ): (text: string, streaming: boolean) => string {
+  const render = chatTextContentRenderer(literalHtml, rich, keepBlankLines);
+  return (text, streaming) => render(text, streaming).html;
+}
+
+/** Internal node-rendering companion to `chatTextRenderer`. Uses the same
+ * bounded lexer, sanitizer and held-text policy. Only an opted-in agent's
+ * completed fences become slots; person text always follows its old path. */
+export function chatTextContentRenderer(
+  literalHtml: boolean,
+  rich = false,
+  keepBlankLines = false,
+  mermaid = false,
+): (text: string, streaming: boolean) => ChatMermaidMarkup {
   const markdown = markdownFor(literalHtml, rich, keepBlankLines);
-  let held: { readonly text: string; readonly html: string } | null = null;
+  let held: { readonly text: string; readonly result: RenderedMessage } | null = null;
   return (text, streaming) => {
     if (streaming && held !== null && text.startsWith(held.text)) {
-      if (text.length < held.text.length * HELD_TEXT_GROWTH) return held.html;
-      held = { text, html: asPlainText(text) };
-      return held.html;
+      if (text.length < held.text.length * HELD_TEXT_GROWTH) return held.result;
+      held = { text, result: { html: asPlainText(text), spent: true } };
+      return held.result;
     }
-    const { html, spent } = renderMessage(markdown, text, streaming, rich);
-    held = streaming && spent ? { text, html } : null;
-    return html;
+    const result = renderMessage(markdown, text, streaming, rich, mermaid && !literalHtml);
+    held = streaming && result.spent ? { text, result } : null;
+    return result;
   };
 }
 

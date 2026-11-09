@@ -49,6 +49,7 @@ import { MarkdownEditor, type MarkdownEditorHandle } from '@plannotator/ui/compo
 import { AnnotationPanel } from '@plannotator/ui/components/AnnotationPanel';
 import { loadableImageSrc } from '@plannotator/ui/components/ImageRegions';
 import { DocumentAIChatPanel } from '@plannotator/ui/components/ai/DocumentAIChatPanel';
+import { renderChatMermaid } from '@plannotator/ui/components/ai/ChatMermaidBlock';
 import { SparklesIcon } from '@plannotator/ui/components/SparklesIcon';
 import { ExportModal } from '@plannotator/ui/components/ExportModal';
 import { ImportModal } from '@plannotator/ui/components/ImportModal';
@@ -7460,6 +7461,7 @@ const App: React.FC = () => {
 
   const renderDocumentAIChat = () => (
     <DocumentAIChatPanel
+      renderMermaid={renderChatMermaid}
       messages={visibleAIMessages}
       isCreatingSession={isAgentTerminalReady ? false : aiIsCreatingSession}
       isStreaming={isAgentTerminalReady ? false : aiIsStreaming}

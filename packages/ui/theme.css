@@ -1753,48 +1753,48 @@ body:has([data-popout="true"]) [data-sidebar-tabs="true"] {
 .ai-markdown {
   line-height: 1.55;
 }
-.ai-markdown p {
+.ai-markdown p:where(:not([data-chat-mermaid] *)) {
   margin: 0.45rem 0;
 }
-.ai-markdown p:first-child {
+.ai-markdown p:first-child:where(:not([data-chat-mermaid] *)) {
   margin-top: 0;
 }
-.ai-markdown p:last-child {
+.ai-markdown p:last-child:where(:not([data-chat-mermaid] *)) {
   margin-bottom: 0;
 }
-.ai-markdown h1,
-.ai-markdown h2,
-.ai-markdown h3,
-.ai-markdown h4,
-.ai-markdown h5,
-.ai-markdown h6 {
+.ai-markdown h1:where(:not([data-chat-mermaid] *)),
+.ai-markdown h2:where(:not([data-chat-mermaid] *)),
+.ai-markdown h3:where(:not([data-chat-mermaid] *)),
+.ai-markdown h4:where(:not([data-chat-mermaid] *)),
+.ai-markdown h5:where(:not([data-chat-mermaid] *)),
+.ai-markdown h6:where(:not([data-chat-mermaid] *)) {
   font-weight: 600;
   margin: 0.75rem 0 0.35rem;
 }
-.ai-markdown h1 { font-size: 0.875rem; }
-.ai-markdown h2 { font-size: 0.8125rem; }
-.ai-markdown h3,
-.ai-markdown h4,
-.ai-markdown h5,
-.ai-markdown h6 { font-size: 0.75rem; }
-.ai-markdown ul,
-.ai-markdown ol {
+.ai-markdown h1:where(:not([data-chat-mermaid] *)) { font-size: 0.875rem; }
+.ai-markdown h2:where(:not([data-chat-mermaid] *)) { font-size: 0.8125rem; }
+.ai-markdown h3:where(:not([data-chat-mermaid] *)),
+.ai-markdown h4:where(:not([data-chat-mermaid] *)),
+.ai-markdown h5:where(:not([data-chat-mermaid] *)),
+.ai-markdown h6:where(:not([data-chat-mermaid] *)) { font-size: 0.75rem; }
+.ai-markdown ul:where(:not([data-chat-mermaid] *)),
+.ai-markdown ol:where(:not([data-chat-mermaid] *)) {
   margin: 0.45rem 0;
   padding-left: 1rem;
 }
-.ai-markdown ul { list-style: disc; }
-.ai-markdown ol { list-style: decimal; }
-.ai-markdown li {
+.ai-markdown ul:where(:not([data-chat-mermaid] *)) { list-style: disc; }
+.ai-markdown ol:where(:not([data-chat-mermaid] *)) { list-style: decimal; }
+.ai-markdown li:where(:not([data-chat-mermaid] *)) {
   margin: 0.15rem 0;
 }
-.ai-markdown code {
+.ai-markdown code:where(:not([data-chat-mermaid] *)) {
   background: color-mix(in oklab, var(--muted) 70%, transparent);
   border: 1px solid color-mix(in oklab, var(--border) 45%, transparent);
   border-radius: 4px;
   padding: 0.05rem 0.3rem;
   font-size: 0.9em;
 }
-.ai-markdown pre {
+.ai-markdown pre:where(:not([data-chat-mermaid] *)) {
   background: color-mix(in oklab, var(--muted) 55%, transparent);
   border: 1px solid color-mix(in oklab, var(--border) 45%, transparent);
   border-radius: 6px;
@@ -1802,19 +1802,19 @@ body:has([data-popout="true"]) [data-sidebar-tabs="true"] {
   overflow-x: auto;
   margin: 0.5rem 0;
 }
-.ai-markdown pre code {
+.ai-markdown pre code:where(:not([data-chat-mermaid] *)) {
   background: transparent;
   border: 0;
   padding: 0;
 }
-.ai-markdown blockquote {
+.ai-markdown blockquote:where(:not([data-chat-mermaid] *)) {
   border-left: 2px solid color-mix(in oklab, var(--primary) 45%, transparent);
   padding-left: 0.6rem;
   color: var(--muted-foreground);
 }
 /* GFM tables in Ask AI answers. The chat panel is narrow, so a wide table
    scrolls sideways inside itself instead of widening the message. */
-.ai-markdown table {
+.ai-markdown table:where(:not([data-chat-mermaid] *)) {
   display: block;
   max-width: 100%;
   overflow-x: auto;
@@ -1822,21 +1822,21 @@ body:has([data-popout="true"]) [data-sidebar-tabs="true"] {
   margin: 0.5rem 0;
   font-size: 0.95em;
 }
-.ai-markdown th,
-.ai-markdown td {
+.ai-markdown th:where(:not([data-chat-mermaid] *)),
+.ai-markdown td:where(:not([data-chat-mermaid] *)) {
   border: 1px solid var(--border);
   padding: 0.25rem 0.5rem;
   text-align: left;
   vertical-align: top;
 }
-.ai-markdown th {
+.ai-markdown th:where(:not([data-chat-mermaid] *)) {
   background: color-mix(in oklab, var(--muted) 55%, transparent);
   font-weight: 600;
 }
-.ai-markdown th[align="center"],
-.ai-markdown td[align="center"] { text-align: center; }
-.ai-markdown th[align="right"],
-.ai-markdown td[align="right"] { text-align: right; }
+.ai-markdown th[align="center"]:where(:not([data-chat-mermaid] *)),
+.ai-markdown td[align="center"]:where(:not([data-chat-mermaid] *)) { text-align: center; }
+.ai-markdown th[align="right"]:where(:not([data-chat-mermaid] *)),
+.ai-markdown td[align="right"]:where(:not([data-chat-mermaid] *)) { text-align: right; }
 
 /* Annotation highlights — shared by the plan editor and the code-review
    description annotations. (Moved here from packages/editor/index.css so both
