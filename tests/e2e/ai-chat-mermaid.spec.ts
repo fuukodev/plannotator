@@ -9,16 +9,25 @@
  * Completion: safe ordinary Markdown/HTML, streamed close versus final EOF,
  * stopped partial answers, independent repeated diagrams, stable SVG nodes when
  * prose appends, readable syntax failures, theme colours and a 280px chat column.
+ * Successful diagrams also keep their frame, SVG, viewport and source scroll
+ * through ten source round trips, without even transient rendering placeholders.
+ * Hidden layers leave the accessibility tree and keyboard order. Theme and
+ * source changes still reach the real renderer while the source is open.
+ * Document source printing expands long code without clipping and restores the
+ * screen frame and a valid diagram after print emulation.
  * The Inbox coverage mounts ChatTranscript with its real UI adapter and compiled
  * Inbox stylesheet; it does not exercise Inbox Ask transport or app caller wiring.
  *
  * Reuse fresh review/hook/Inbox build artifacts and PLANNOTATOR_E2E_BINARY.
  * Run through test:sandbox, or Playwright with a local config that sets Chromium's
  * executablePath. This spec only bundles its fixture; it never builds an app.
+ * For manual review, PLANNOTATOR_E2E_PROOF_DIR enables light-mode Chinese-flow
+ * source/diagram PNGs under ai-chat-mermaid-toggle/, only after the document
+ * compiled-app smoke passes. With no proof directory this spec writes no PNGs.
  */
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { openPackedApp, type PackedApp } from '../../packages/shared/packed-app';
 import { NO_BROWSER } from '../helpers/no-browser';
@@ -38,6 +47,10 @@ const appFiles: Record<Surface, string> = {
   inbox: join(repo, 'apps/hook/dist/inbox.html'),
 };
 const FLOW = 'flowchart LR\n  A[Client] --> B[Server]';
+const PROOF_FLOW = 'flowchart LR\n  A[用户请求] --> B[参数校验]\n  B --> C[模型调用]\n  C --> D[返回响应]';
+const proofDir = process.env.PLANNOTATOR_E2E_PROOF_DIR
+  ? join(resolve(process.env.PLANNOTATOR_E2E_PROOF_DIR), 'ai-chat-mermaid-toggle')
+  : undefined;
 const fence = (source = FLOW) => `\`\`\`mermaid\n${source}\n\`\`\``;
 const SVG = '[data-chat-mermaid] [data-diagram-svg] > svg';
 const ATTACKS = [
@@ -139,7 +152,7 @@ async function openFixture(page: Page, surface: Surface) {
 
 const show = (page: Page, next: Paint) => page.evaluate(paint => window.__mermaidChat.show(paint), next);
 
-async function expectRealDiagram(body: Locator, count = 1) {
+async function expectRealDiagram(body: Locator, count = 1, nodes = 2) {
   const diagrams = body.locator(SVG);
   try {
     await expect(diagrams).toHaveCount(count);
@@ -153,10 +166,145 @@ async function expectRealDiagram(body: Locator, count = 1) {
     expect(await diagrams.nth(at).evaluate(svg => {
       const box = (svg as SVGSVGElement).getBBox();
       return { nodes: svg.querySelectorAll('g.node').length, edges: svg.querySelectorAll('path.flowchart-link').length, width: box.width, height: box.height };
-    })).toMatchObject({ nodes: 2, edges: 1, width: expect.any(Number), height: expect.any(Number) });
+    })).toMatchObject({ nodes, edges: nodes - 1, width: expect.any(Number), height: expect.any(Number) });
     const box = await diagrams.nth(at).boundingBox();
     expect(box!.width).toBeGreaterThan(20);
     expect(box!.height).toBeGreaterThan(20);
+  }
+}
+
+/** Watch the whole successful-mode interval, including nodes added and removed in one task. */
+async function watchModeSwitches(block: Locator) {
+  return block.evaluateHandle(root => {
+    const frame = root.querySelector<HTMLElement>('[data-diagram-inline]')!;
+    const svg = root.querySelector<SVGSVGElement>('[data-diagram-svg] > svg')!;
+    const source = root.querySelector<HTMLElement>('pre')!;
+    const button = root.querySelector<HTMLButtonElement>('button[aria-label="Show source"]')!;
+    const wrapper = svg.parentElement!;
+    const transform = wrapper.style.transform;
+    const skin = () => {
+      const css = getComputedStyle(frame);
+      return [css.backgroundColor, css.borderColor, css.borderWidth, css.borderStyle, css.borderRadius];
+    };
+    const geometry = () => {
+      const box = frame.getBoundingClientRect();
+      const mode = button.getBoundingClientRect();
+      return [box.width, box.height, mode.left - box.left, mode.top - box.top, mode.width, mode.height];
+    };
+    const baseline = { skin: skin(), geometry: geometry() };
+    const violations = new Set<string>();
+    let samples = 0;
+    let mutations = 0;
+    let raf = 0;
+    let stopped = false;
+    const pending = '[data-diagram-pending], [data-mermaid-pending], [data-diagram-fallback]';
+    const rendering = /\bRendering\s+(?:diagram|Mermaid)\b/i;
+    const inspect = (node: Node) => {
+      if (node instanceof Element && (node.matches(pending) || node.querySelector(pending))) violations.add('rendering placeholder appeared');
+      if (rendering.test(node.textContent ?? '')) violations.add('rendering status appeared');
+    };
+    const sample = () => {
+      samples += 1;
+      for (const [name, element] of [['frame', frame], ['SVG', svg], ['source', source], ['mode button', button]] as const) {
+        if (!element.isConnected || !root.contains(element)) violations.add(`${name} disconnected`);
+      }
+      if (root.querySelector('[data-diagram-svg] > svg') !== svg) violations.add('SVG node changed');
+      if (wrapper.style.transform !== transform) violations.add('zoom or pan changed');
+      if (skin().some((value, at) => value !== baseline.skin[at])) violations.add('frame background, border or radius changed');
+      geometry().forEach((value, at) => {
+        if (Math.abs(value - baseline.geometry[at]!) > 1) violations.add(`frame or button geometry changed at ${at}: ${value} versus ${baseline.geometry[at]}`);
+      });
+      const mode = button.getBoundingClientRect();
+      for (const other of root.querySelectorAll('button')) {
+        const box = other.getBoundingClientRect();
+        if (getComputedStyle(other).visibility !== 'hidden' && Math.abs(box.top - mode.top) <= 1 && box.right > mode.right + 1) {
+          violations.add('mode button left the right edge of its toolbar');
+        }
+      }
+      inspect(root);
+    };
+    const consume = (records: MutationRecord[]) => {
+      mutations += records.length;
+      for (const record of records) {
+        if (record.type === 'attributes' && /^data-(?:diagram-pending|mermaid-pending|diagram-fallback)$/.test(record.attributeName!)) {
+          violations.add('rendering placeholder attribute changed');
+        }
+        if (record.type === 'characterData' && rendering.test(record.oldValue ?? '')) violations.add('transient rendering status appeared');
+        for (const node of record.addedNodes) inspect(node);
+        // Inspect the removed tree too: querying the final DOM misses a one-task pending flash.
+        for (const node of record.removedNodes) {
+          inspect(node);
+          for (const element of [frame, svg, source, button]) {
+            if (node === element || node.contains(element)) violations.add('a retained frame, SVG, source or mode button was removed');
+          }
+        }
+      }
+      sample();
+    };
+    const observer = new MutationObserver(consume);
+    observer.observe(document.getElementById('subject')!, {
+      subtree: true, childList: true, attributes: true, attributeOldValue: true,
+      characterData: true, characterDataOldValue: true,
+    });
+    const resize = new ResizeObserver(sample);
+    resize.observe(frame);
+    const tick = () => { sample(); raf = requestAnimationFrame(tick); };
+    tick();
+    return {
+      baseline,
+      stop() {
+        if (!stopped) {
+          stopped = true;
+          consume(observer.takeRecords());
+          observer.disconnect();
+          resize.disconnect();
+          cancelAnimationFrame(raf);
+        }
+        return { samples, mutations, violations: [...violations] };
+      },
+    };
+  });
+}
+
+/** Traverse a complete Tab cycle so hidden canvas controls or source scrolling cannot take focus. */
+async function expectActiveLayerTabOrder(page: Page, block: Locator, sourceActive: boolean) {
+  const toggle = block.getByRole('button', { name: sourceActive ? 'Show diagram' : 'Show source', exact: true });
+  await toggle.focus();
+  const limit = await page.locator('button, a[href], input, textarea, select, [tabindex]').count() + 2;
+  let reachedActive = false;
+  let returnedToToggle = false;
+  for (let step = 0; step < limit; step += 1) {
+    await page.keyboard.press('Tab');
+    const focus = await block.evaluate((root, sourceActive) => {
+      const active = document.activeElement;
+      const source = root.querySelector('pre')!;
+      const canvas = root.querySelector('[data-diagram-canvas]')!;
+      const withinSource = source === active || source.contains(active);
+      const withinCanvas = canvas === active || canvas.contains(active);
+      return {
+        inactive: sourceActive ? withinCanvas : withinSource,
+        active: sourceActive ? withinSource : withinCanvas,
+        toggle: active?.getAttribute('aria-label') === (sourceActive ? 'Show diagram' : 'Show source'),
+      };
+    }, sourceActive);
+    expect(focus.inactive, 'Tab must skip the inactive diagram layer').toBe(false);
+    reachedActive ||= focus.active;
+    if (focus.toggle) { returnedToToggle = true; break; }
+  }
+  expect(reachedActive, 'Tab must reach the active canvas or source scroll area').toBe(true);
+  expect(returnedToToggle, 'Tab must complete a focus cycle').toBe(true);
+}
+
+async function expectSourceMode(block: Locator, sourceActive: boolean) {
+  await expect(block.getByRole('button', { name: sourceActive ? 'Show diagram' : 'Show source', exact: true })).toBeVisible();
+  await expect(block.getByRole('code')).toHaveCount(sourceActive ? 1 : 0);
+  await expect(block.getByRole('group', { name: 'Zoom', exact: true })).toHaveCount(sourceActive ? 0 : 1);
+  if (sourceActive) {
+    await expect(block.locator('pre')).toBeVisible();
+    await expect(block.locator('[data-diagram-canvas]')).toBeHidden();
+  } else {
+    await expect(block.locator('pre')).toBeHidden();
+    await expect(block.locator('[data-diagram-canvas]')).toBeVisible();
   }
 }
 
@@ -253,6 +401,188 @@ for (const surface of ['document', 'review', 'inbox'] as const) {
       expect(seen).toEqual({ errors: [], hostileRequests: [], dialogs: 0 });
     });
 
+    test('preserves the successful frame, SVG, viewport and source scroll through ten source round trips', async ({ page }) => {
+      const { body, seen } = await openFixture(page, surface);
+      await page.locator('#mount').evaluate(element => { element.style.width = '280px'; });
+      // Comments make both source axes overflow without inflating the rendered two-node diagram.
+      const source = `${FLOW}\n${Array.from({ length: 48 }, (_, line) => `  %% ${line + 1} ${'long source comment '.repeat(18)}`).join('\n')}`;
+      await show(page, { text: fence(source) });
+      await expectRealDiagram(body);
+      await page.evaluate(() => document.fonts.ready.then(() => {}));
+      const block = body.locator('[data-chat-mermaid]');
+      const pre = block.locator('pre');
+      await expect(pre).toHaveCount(1);
+      const canvas = block.locator('[data-diagram-canvas]');
+      const viewport = () => block.locator('[data-diagram-svg]').evaluate(element => {
+        const matrix = new DOMMatrixReadOnly(getComputedStyle(element).transform);
+        return { x: matrix.e, y: matrix.f, scale: matrix.a };
+      });
+      await canvas.focus();
+      const fit = await viewport();
+      await canvas.press('+');
+      await expect.poll(async () => (await viewport()).scale).toBeGreaterThan(fit.scale);
+      const zoomed = await viewport();
+      await canvas.press('ArrowRight');
+      await canvas.press('ArrowDown');
+      await expect.poll(async () => (await viewport()).x).not.toBe(zoomed.x);
+      await expect.poll(async () => (await viewport()).y).not.toBe(zoomed.y);
+      const audit = await watchModeSwitches(block);
+      try {
+        const baseline = await audit.evaluate(watcher => watcher.baseline);
+        expect(baseline.skin[0], 'the shared frame has a background').not.toMatch(/^(?:transparent|rgba\(0, 0, 0, 0\))$/);
+        expect(baseline.skin.slice(2, 4)).toEqual(['1px', 'solid']);
+        expect(parseFloat(baseline.skin[4]!), 'the shared frame follows the host rounded theme').toBeGreaterThan(0);
+        let scroll = { left: 0, top: 0 };
+        for (let round = 0; round < 10; round += 1) {
+          await block.getByRole('button', { name: 'Show source', exact: true }).click();
+          await expectSourceMode(block, true);
+          if (round === 0) {
+            await expect(pre).toHaveCSS('padding-top', '16px');
+            await expect(pre).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+            await expect(pre).toHaveCSS('border-top-width', '0px');
+            await expect(pre).toHaveCSS('border-radius', '0px');
+            const code = block.getByRole('code');
+            await expect(code).toHaveCSS('padding', '0px');
+            await expect(code).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+            await expect(code).toHaveCSS('white-space', 'pre');
+            scroll = await pre.evaluate(element => {
+              element.scrollTo({
+                left: (element.scrollWidth - element.clientWidth) / 2,
+                top: (element.scrollHeight - element.clientHeight) / 2,
+                behavior: 'instant',
+              });
+              return { left: element.scrollLeft, top: element.scrollTop };
+            });
+            expect(scroll.left, 'long source scrolls horizontally inside the frame').toBeGreaterThan(50);
+            expect(scroll.top, 'long source scrolls vertically inside the frame').toBeGreaterThan(50);
+            await expectActiveLayerTabOrder(page, block, true);
+          }
+          expect(await pre.evaluate(element => ({ left: element.scrollLeft, top: element.scrollTop })), 'source scroll survives a reopen').toEqual(scroll);
+          expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth), 'source must not widen the page').toBeLessThanOrEqual(1);
+          await block.getByRole('button', { name: 'Show diagram', exact: true }).click();
+          await expectSourceMode(block, false);
+          if (round === 0) await expectActiveLayerTabOrder(page, block, false);
+        }
+        const report = await audit.evaluate(watcher => watcher.stop());
+        expect(report.mutations, 'the observer covered actual mode changes').toBeGreaterThan(0);
+        expect(report.samples).toBeGreaterThan(20);
+        expect(report.violations).toEqual([]);
+        await expectRealDiagram(body);
+        expect(seen.errors).toEqual([]);
+      } finally {
+        await audit.evaluate(watcher => watcher.stop());
+        await audit.dispose();
+      }
+    });
+
+    test('renders theme and source changes made while source is open', async ({ page }) => {
+      const { body, seen } = await openFixture(page, surface);
+      await show(page, { text: fence() });
+      await expectRealDiagram(body);
+      const block = body.locator('[data-chat-mermaid]');
+      const nodeFill = () => block.locator('[data-diagram-svg] > svg g.node rect').first().evaluate(node => getComputedStyle(node).fill);
+      const darkFill = await nodeFill();
+      await block.getByRole('button', { name: 'Show source', exact: true }).click();
+      await expectSourceMode(block, true);
+      await page.getByRole('button', { name: 'Switch to light', exact: true }).click();
+      await expect(page.locator('html')).toHaveClass(/\blight\b/);
+      await expect.poll(nodeFill).not.toBe(darkFill);
+      await expectSourceMode(block, true);
+      const lightFill = await nodeFill();
+      await block.getByRole('button', { name: 'Show diagram', exact: true }).click();
+      await expectRealDiagram(body);
+      expect(await nodeFill()).toBe(lightFill);
+      const previous = await block.locator('[data-diagram-svg] > svg').elementHandle();
+      try {
+        await block.getByRole('button', { name: 'Show source', exact: true }).click();
+        await expectSourceMode(block, true);
+        const updated = 'flowchart LR\n  A[Gateway] --> B[Database]';
+        await show(page, { text: fence(updated) });
+        // The chat bridge intentionally resets a fence subtree when its source changes.
+        // Either initial mode is valid, but the old SVG must never stand in for the new result.
+        const next = block.locator('[data-diagram-svg] > svg');
+        await expect(next).toHaveCount(1);
+        await expect(next.locator('g.node')).toHaveText([/Gateway/, /Database/]);
+        const returnToDiagram = block.getByRole('button', { name: 'Show diagram', exact: true });
+        if (await returnToDiagram.count()) await returnToDiagram.click();
+        await expectRealDiagram(body);
+        expect(await next.evaluate((svg, old) => svg !== old && svg.isConnected && !old!.isConnected, previous)).toBe(true);
+        expect(await nodeFill()).toBe(lightFill);
+        expect(seen.errors).toEqual([]);
+      } finally {
+        await previous!.dispose();
+      }
+    });
+
+    if (surface === 'document') test('prints long source without clipping and restores the screen frame', async ({ page }) => {
+      const { body, seen } = await openFixture(page, surface);
+      await page.getByRole('button', { name: 'Switch to light', exact: true }).click();
+      await expect(page.locator('html')).toHaveClass(/\blight\b/);
+      const source = `${FLOW}\n${Array.from({ length: 48 }, (_, line) => `  %% ${line + 1} ${'print every source line '.repeat(14)}`).join('\n')}`;
+      await show(page, { text: fence(source) });
+      await expectRealDiagram(body);
+      const block = body.locator('[data-chat-mermaid]');
+      const frame = block.locator('[data-diagram-inline]');
+      const pre = block.locator('pre');
+      await block.getByRole('button', { name: 'Show source', exact: true }).click();
+      await expectSourceMode(block, true);
+      const screenBox = await frame.boundingBox();
+      const scroll = await pre.evaluate(element => {
+        element.scrollTo({ left: 150, top: 200, behavior: 'instant' });
+        const styles = (node: Element) => {
+          const css = getComputedStyle(node);
+          return {
+            whiteSpace: css.whiteSpace, overflow: css.overflow,
+            overflowX: css.overflowX, overflowY: css.overflowY, scrollBehavior: css.scrollBehavior,
+          };
+        };
+        return {
+          left: element.scrollLeft, top: element.scrollTop,
+          scrollWidth: element.scrollWidth, clientWidth: element.clientWidth,
+          scrollHeight: element.scrollHeight, clientHeight: element.clientHeight,
+          pre: styles(element), code: styles(element.querySelector('code')!),
+        };
+      });
+      const scrollProbe = `screen source scroll: ${JSON.stringify(scroll)}`;
+      expect(scroll.left, scrollProbe).toBeGreaterThan(50);
+      expect(scroll.top, scrollProbe).toBeGreaterThan(50);
+      try {
+        await page.emulateMedia({ media: 'print' });
+        await expect(pre).toBeVisible();
+        await expect(block.locator('[data-diagram-canvas]')).toBeHidden();
+        await expect(block.getByRole('button', { name: 'Show diagram', exact: true })).toBeHidden();
+        const printed = await pre.evaluate(element => {
+          const box = element.getBoundingClientRect();
+          const frame = element.closest('[data-diagram-inline]')!.getBoundingClientRect();
+          const range = document.createRange();
+          range.selectNodeContents(element.querySelector('code')!);
+          const text = range.getBoundingClientRect();
+          return {
+            height: box.height,
+            overflowX: element.scrollWidth - element.clientWidth,
+            overflowY: element.scrollHeight - element.clientHeight,
+            clipped: text.left < box.left - 1 || text.right > box.right + 1
+              || text.top < box.top - 1 || text.bottom > box.bottom + 1
+              || box.left < frame.left - 1 || box.right > frame.right + 1
+              || box.top < frame.top - 1 || box.bottom > frame.bottom + 1,
+          };
+        });
+        expect(printed.height, 'paper expands the full source beyond the screen frame').toBeGreaterThan(screenBox!.height + 50);
+        expect(printed.overflowX, 'paper wraps long source lines').toBeLessThanOrEqual(1);
+        expect(printed.overflowY, 'paper contains every source line without scrolling').toBeLessThanOrEqual(1);
+        expect(printed.clipped, 'the printed frame and source contain all source text').toBe(false);
+      } finally {
+        await page.emulateMedia({ media: 'screen' });
+      }
+      await expectSourceMode(block, true);
+      const restored = await frame.boundingBox();
+      expect(Math.abs(restored!.width - screenBox!.width)).toBeLessThanOrEqual(1);
+      expect(Math.abs(restored!.height - screenBox!.height)).toBeLessThanOrEqual(1);
+      await block.getByRole('button', { name: 'Show diagram', exact: true }).click();
+      await expectRealDiagram(body);
+      expect(seen.errors).toEqual([]);
+    });
+
     test('keeps labels and controls inside a narrow column and follows the host theme', async ({ page }) => {
       const { body, seen } = await openFixture(page, surface);
       await page.locator('#mount').evaluate(element => { element.style.width = '280px'; });
@@ -346,6 +676,8 @@ for (const surface of ['document', 'review'] as const) {
     // Review discovers model lists at startup. Its own stubs keep those probes
     // away from both the runner's tripwire and every installed agent CLI.
     const agentBin = writeAgentCliStubs(join(root, 'bin'));
+    const manualReview = surface === 'document' && !!proofDir;
+    let proof: { source: Buffer; diagram: Buffer } | undefined;
     let child: ChildProcess | undefined;
     let url: string | undefined;
     try {
@@ -363,10 +695,12 @@ for (const surface of ['document', 'review'] as const) {
       });
       await expect.poll(() => existsSync(ready) ? readFileSync(ready, 'utf8') : '', { timeout: 30_000 }).toContain('"url"');
       url = JSON.parse(readFileSync(ready, 'utf8').trim().split('\n')[0]!).url;
-      await page.context().addCookies(Object.entries(FIRST_RUN).map(([name, value]) => ({ name, value, url: url! })));
+      // The proof uses the app's real theme and panel-width preferences (600px is its resize maximum).
+      const cookies = { ...FIRST_RUN, ...(manualReview ? { 'plannotator-theme': 'light', 'plannotator-panel-width': '600' } : {}) };
+      await page.context().addCookies(Object.entries(cookies).map(([name, value]) => ({ name, value, url: url! })));
       const seen = observe(page);
       await page.route('https://evil.test/**', route => route.abort());
-      const queries = await fakeAI(page, `An **answer**.\n\n${ATTACKS}\n\n${fence()}`);
+      const queries = await fakeAI(page, `An **answer**.\n\n${ATTACKS}\n\n${fence(manualReview ? PROOF_FLOW : FLOW)}`);
       await page.goto(url!);
       const chat = surface === 'document'
         ? page.getByRole('button', { name: 'Show AI chat', exact: true })
@@ -376,7 +710,7 @@ for (const surface of ['document', 'review'] as const) {
       await input.fill('Draw a Mermaid flowchart');
       await input.press('ControlOrMeta+Enter');
       const body = page.locator('[data-question-id] .ai-markdown');
-      await expectRealDiagram(body);
+      await expectRealDiagram(body, 1, manualReview ? 4 : 2);
       await expect(body.locator('strong')).toHaveText('answer');
       await expect(body.locator('[data-chat-mermaid]')).toHaveCount(1);
       await expectSafe(body, page);
@@ -384,8 +718,33 @@ for (const surface of ['document', 'review'] as const) {
       expect(seen).toEqual({ errors: [], hostileRequests: [], dialogs: 0 });
       const modelProbe = /^(cursor-agent models|opencode models|pi --list-models|copilot help config)$/;
       expect(agentCliCalls(agentBin).filter(call => !modelProbe.test(call))).toEqual([]);
+      if (manualReview) {
+        await expect(page.locator('html')).toHaveClass(/\blight\b/);
+        const block = body.locator('[data-chat-mermaid]');
+        const frame = block.locator('[data-diagram-inline]');
+        await block.getByRole('button', { name: 'Show source', exact: true }).click();
+        await expectSourceMode(block, true);
+        await expect(block.getByRole('code')).toHaveText(PROOF_FLOW);
+        const sourceBox = await frame.boundingBox();
+        const source = await frame.screenshot();
+        await block.getByRole('button', { name: 'Show diagram', exact: true }).click();
+        await expectSourceMode(block, false);
+        await expectRealDiagram(body, 1, 4);
+        await expect(block.locator('[data-diagram-svg] > svg g.node')).toHaveText([/用户请求/, /参数校验/, /模型调用/, /返回响应/]);
+        const diagramBox = await frame.boundingBox();
+        expect(Math.abs(sourceBox!.width - diagramBox!.width)).toBeLessThanOrEqual(1);
+        expect(Math.abs(sourceBox!.height - diagramBox!.height)).toBeLessThanOrEqual(1);
+        proof = { source, diagram: await frame.screenshot() };
+        expect(seen).toEqual({ errors: [], hostileRequests: [], dialogs: 0 });
+      }
     } finally {
       await stopApp(child, url, root);
+    }
+    // Keep image bytes in memory until assertions and the sandbox cleanup both succeed.
+    if (proof) {
+      mkdirSync(proofDir!, { recursive: true });
+      writeFileSync(join(proofDir!, 'document-light-source.png'), proof.source);
+      writeFileSync(join(proofDir!, 'document-light-diagram.png'), proof.diagram);
     }
   });
 }

@@ -9,7 +9,9 @@
  * - the automatic single re-attempt is gone, so a one-off fetch hiccup lands
  *   the user on the error panel;
  * - a persistent failure no longer shows the existing error panel with the
- *   source (never blank), or its Retry no longer issues a fresh attempt.
+ *   source (never blank), or its Retry no longer issues a fresh attempt;
+ * - toggling source unmounts the viewer, so the SVG, viewport and source
+ *   scroll are lost and returning to the diagram renders it again.
  *
  * The runtimes are stood in for through the test hooks so the real Mermaid
  * and Graphviz never load; the rendered SVG is a sentinel string.
@@ -101,6 +103,7 @@ const cases = [
     install: (loader: () => Promise<unknown>) => __setMermaidRuntimeLoaderForTests(loader as never, { retryDelayMs: RETRY_DELAY_MS }),
     runtime: fakeMermaid,
     element: <MermaidBlock block={mermaidBlock} />,
+    block: mermaidBlock,
     source: mermaidBlock.content,
     errorTitle: 'Mermaid Error',
   },
@@ -109,6 +112,7 @@ const cases = [
     install: (loader: () => Promise<unknown>) => __setVizLoaderForTests(loader as never, { retryDelayMs: RETRY_DELAY_MS }),
     runtime: fakeViz,
     element: <GraphvizBlock block={dotBlock} />,
+    block: dotBlock,
     source: dotBlock.content,
     errorTitle: 'Graphviz Error',
   },
@@ -145,7 +149,111 @@ describe('Mermaid pending state', () => {
   });
 });
 
-describe.each(cases)('$name lazy runtime', ({ install, runtime, element, source, errorTitle }) => {
+describe.each(cases)('$name lazy runtime', ({ name, install, runtime, element, block, source, errorTitle }) => {
+  test.skipIf(!hasDom)('source toggles preserve the SVG, viewport, scroll and focused button without another render', async () => {
+    let renderCalls = 0;
+    const countedRuntime = name === 'Mermaid'
+      ? { initialize() {}, render: async () => { renderCalls += 1; return { svg: SVG }; } }
+      : { render: () => { renderCalls += 1; return { status: 'success', output: SVG, errors: [] }; } };
+    const loader = flakyLoader(countedRuntime, 0);
+    install(loader.load);
+    // CRLF, tabs and trailing whitespace must survive the read-only view.
+    const originalSource = `${source}\r\n \t\r\n`;
+    const el = await mount(React.cloneElement(element, { block: { ...block, content: originalSource } }));
+    await settle(RETRY_DELAY_MS * 5);
+
+    const svg = el.querySelector<SVGSVGElement>('svg[data-sentinel="diagram"]')!;
+    const canvas = el.querySelector<HTMLElement>('[data-diagram-canvas]')!;
+    const svgWrapper = el.querySelector<HTMLElement>('[data-diagram-svg]')!;
+    const frame = el.querySelector<HTMLElement>('[data-diagram-inline]')!;
+    const frameHeight = frame.style.height;
+    const toggle = el.querySelector<HTMLButtonElement>('button[aria-label="Show source"]')!;
+    expect(svg).not.toBeNull();
+    expect(renderCalls).toBe(1);
+    expect(loader.calls()).toBe(1);
+
+    const initialTransform = svgWrapper.style.transform;
+    await act(async () => {
+      canvas.dispatchEvent(new KeyboardEvent('keydown', { key: '+', bubbles: true }));
+      canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
+      toggle.focus();
+    });
+    const adjustedTransform = svgWrapper.style.transform;
+    expect(adjustedTransform).not.toBe(initialTransform);
+
+    let sawPending = false;
+    const observer = new MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (node instanceof Element && (node.matches('[data-diagram-pending]') || node.querySelector('[data-diagram-pending]'))) sawPending = true;
+        }
+      }
+    });
+    observer.observe(el, { childList: true, subtree: true });
+    let sourceBody: HTMLPreElement | null = null;
+    try {
+      for (let round = 0; round < 3; round += 1) {
+        await act(async () => toggle.click());
+        expect(svg.isConnected).toBe(true);
+        expect(el.querySelector('svg[data-sentinel="diagram"]')).toBe(svg);
+        expect(el.querySelectorAll('[data-diagram-viewer]')).toHaveLength(1);
+        // These two action names and the far-right toggle are deliberate UX contracts.
+        expect(toggle.getAttribute('aria-label')).toBe('Show diagram');
+        expect(toggle.title).toBe('Show diagram');
+        expect(toggle.parentElement!.lastElementChild).toBe(toggle);
+        expect(document.activeElement).toBe(toggle);
+        expect(el.querySelector('[data-diagram-expand]')).toBeNull();
+
+        const diagramLayer = canvas.closest<HTMLElement>('[data-diagram-layer="diagram"]')!;
+        const sourceLayer = el.querySelector<HTMLElement>('[data-diagram-layer="source"]')!;
+        expect(diagramLayer.style.visibility).toBe('hidden');
+        expect(diagramLayer.hasAttribute('inert')).toBe(true);
+        expect(diagramLayer.getAttribute('aria-hidden')).toBe('true');
+        expect(sourceLayer.style.visibility).toBe('visible');
+        expect(sourceLayer.hasAttribute('inert')).toBe(false);
+        expect(sourceLayer.getAttribute('aria-hidden')).toBeNull();
+        const currentSourceBody = sourceLayer.querySelector<HTMLPreElement>('pre')!;
+        if (sourceBody === null) {
+          sourceBody = currentSourceBody;
+          sourceBody.scrollTop = 47;
+          sourceBody.scrollLeft = 23;
+        }
+        expect(currentSourceBody).toBe(sourceBody);
+        expect(sourceBody.textContent).toBe(originalSource);
+        expect(sourceBody.scrollTop).toBe(47);
+        expect(sourceBody.scrollLeft).toBe(23);
+
+        await act(async () => toggle.click());
+        await settle(RETRY_DELAY_MS);
+        expect(el.querySelector('button[aria-label="Show source"]')).toBe(toggle);
+        expect(toggle.title).toBe('Show source');
+        expect(toggle.parentElement!.lastElementChild).toBe(toggle);
+        expect(document.activeElement).toBe(toggle);
+        expect(el.querySelector('[data-diagram-expand]')!.nextElementSibling).toBe(toggle);
+        expect(diagramLayer.style.visibility).toBe('visible');
+        expect(diagramLayer.hasAttribute('inert')).toBe(false);
+        expect(diagramLayer.getAttribute('aria-hidden')).toBeNull();
+        expect(sourceLayer.style.visibility).toBe('hidden');
+        expect(sourceLayer.hasAttribute('inert')).toBe(true);
+        expect(sourceLayer.getAttribute('aria-hidden')).toBe('true');
+        expect(svg.isConnected).toBe(true);
+        expect(el.querySelector('svg[data-sentinel="diagram"]')).toBe(svg);
+        expect(svgWrapper.style.transform).toBe(adjustedTransform);
+        expect(el.querySelector('[data-diagram-inline]')).toBe(frame);
+        expect(frame.style.height).toBe(frameHeight);
+        expect(el.querySelector('[data-diagram-pending]')).toBeNull();
+        expect(renderCalls).toBe(1);
+        expect(loader.calls()).toBe(1);
+      }
+      expect(sawPending).toBe(false);
+    } finally {
+      observer.disconnect();
+    }
+    await act(async () => root!.unmount());
+    root = null;
+    expect(svg.isConnected).toBe(false);
+  });
+
   test.skipIf(!hasDom)('a runtime that fails once renders the diagram after the automatic re-attempt', async () => {
     const loader = flakyLoader(runtime, 1);
     install(loader.load);

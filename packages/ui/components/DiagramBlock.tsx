@@ -99,6 +99,15 @@ export interface DiagramBlockProps {
 
 const NO_ANNOTATIONS: readonly Annotation[] = [];
 
+/**
+ * Render a document diagram with comments and an optional full-size popout.
+ * After the first successful render, diagram and read-only source share one
+ * frame. Switching views keeps the viewer and source mounted, preserving the
+ * SVG, zoom, pan, source scroll and toggle focus without another engine call.
+ * Source, kind, theme and Retry changes still use the viewer's render hook.
+ * Screen switches keep matching frame dimensions. Printing active source
+ * expands it to natural height and wraps long lines.
+ */
 export const DiagramBlock: React.FC<DiagramBlockProps & { kind: DiagramKind }> = ({
   kind,
   block,
@@ -359,66 +368,80 @@ export const DiagramBlock: React.FC<DiagramBlockProps & { kind: DiagramKind }> =
           so a text restore (a reply that lost its anchor, a quote that also
           appears in a node label) can never wrap a <mark> inside the svg. */}
       <div ref={rootRef} className="annotation-exclude my-5 group relative" data-block-id={block.id} data-pinpoint-ignore="" data-diagram-block={kind}>
-        {svgReady && !showSource && (
-          <div data-print-hide="" className="absolute top-2 right-2 z-10 flex items-center gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity">
-            <button
-              type="button"
-              onClick={() => setShowSource(true)}
-              className="p-1.5 rounded-md bg-muted/85 hover:bg-muted text-muted-foreground hover:text-foreground"
-              title="Show source"
-              aria-label="Show source"
+        <div
+          data-diagram-inline=""
+          className={svgReady
+            ? `flex flex-col rounded-xl bg-muted/30 border border-border/30 overflow-hidden${showSource ? ' print:block print:h-auto! print:overflow-visible' : ''}`
+            : undefined}
+          style={svgReady ? { height: inlineHeight(renderState) } : undefined}
+        >
+          {svgReady && (
+            <div data-diagram-toolbar="" data-print-hide="" className="flex h-10 shrink-0 items-center justify-end gap-1 px-2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity">
+              {!showSource && (
+                <button
+                  type="button"
+                  onClick={() => setIsExpanded(true)}
+                  className="p-1.5 rounded-md bg-muted/85 hover:bg-muted text-muted-foreground hover:text-foreground"
+                  title="Expand diagram"
+                  aria-label="Expand diagram"
+                  data-diagram-expand=""
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />
+                  </svg>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setShowSource((current) => !current)}
+                className="p-1.5 rounded-md bg-muted/85 hover:bg-muted text-muted-foreground hover:text-foreground"
+                title={showSource ? 'Show diagram' : 'Show source'}
+                aria-label={showSource ? 'Show diagram' : 'Show source'}
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d={showSource
+                    ? 'M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z'
+                    : 'M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4'} />
+                </svg>
+              </button>
+            </div>
+          )}
+          {/* After the first success, keep both screen layers mounted and
+              equally sized. Until then, the fallback owns the only source copy.
+              Screen switches avoid display:none so Fit keeps its host size.
+              Printing active source uses normal flow to avoid frame clipping. */}
+          <div className="relative min-h-0 flex-1">
+            <div
+              data-diagram-layer="diagram"
+              className={showSource ? 'h-full w-full print:hidden' : 'h-full w-full'}
+              style={{ visibility: showSource ? 'hidden' : 'visible' }}
+              inert={showSource || undefined}
+              aria-hidden={showSource || undefined}
             >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
-              </svg>
-            </button>
-            <button
-              type="button"
-              onClick={() => setIsExpanded(true)}
-              className="p-1.5 rounded-md bg-muted/85 hover:bg-muted text-muted-foreground hover:text-foreground"
-              title="Expand diagram"
-              aria-label="Expand diagram"
-              data-diagram-expand=""
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />
-              </svg>
-            </button>
+              <DiagramViewer
+                {...viewerProps}
+                renderId={`${kind}-${block.id}`}
+                onAskAI={handleAskAI}
+                onResolutionChange={setResolution}
+                onRenderState={setRenderState}
+                renderFallback={renderFallback}
+                reopenComment={reopenComment}
+                onComposerAnchor={inlineComposerAnchor}
+              />
+            </div>
+            {svgReady && (
+              <div
+                data-diagram-layer="source"
+                className={showSource ? 'absolute inset-0 print:static' : 'absolute inset-0'}
+                style={{ visibility: showSource ? 'visible' : 'hidden' }}
+                inert={!showSource || undefined}
+                aria-hidden={!showSource || undefined}
+              >
+                <DiagramInlineSource block={block} kind={kind} embedded />
+              </div>
+            )}
           </div>
-        )}
-        {showSource ? (
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setShowSource(false)}
-              className="absolute top-2 right-2 z-10 p-1.5 rounded-md bg-muted/85 hover:bg-muted text-muted-foreground hover:text-foreground"
-              title="Show diagram"
-              aria-label="Show diagram"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-              </svg>
-            </button>
-            <DiagramInlineSource block={block} kind={kind} />
-          </div>
-        ) : (
-          <div
-            data-diagram-inline=""
-            className={svgReady ? 'rounded-xl bg-muted/30 border border-border/30 overflow-hidden' : undefined}
-            style={svgReady ? { height: inlineHeight(renderState) } : undefined}
-          >
-            <DiagramViewer
-              {...viewerProps}
-              renderId={`${kind}-${block.id}`}
-              onAskAI={handleAskAI}
-              onResolutionChange={setResolution}
-              onRenderState={setRenderState}
-              renderFallback={renderFallback}
-              reopenComment={reopenComment}
-              onComposerAnchor={inlineComposerAnchor}
-            />
-          </div>
-        )}
+        </div>
       </div>
       {isExpanded && svgReady && typeof document !== 'undefined' && (
         // A popout chunk that cannot load leaves the inline diagram as it is

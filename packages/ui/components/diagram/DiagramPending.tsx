@@ -19,10 +19,26 @@ import type { Block } from '../../types';
  * every document read, diagram or not.
  */
 
-/** The fence's own text, as the document would show it unrendered. */
-export const DiagramInlineSource: React.FC<{ block: Block; kind: DiagramKind }> = ({ block, kind }) => (
-  <pre className="rounded-lg text-[13px] overflow-x-auto bg-muted/50 border border-border/30 p-4">
-    <code className={`pn-code font-mono language-${block.language?.trim().split(/\s+/, 1)[0] ?? kind}`}>{block.content}</code>
+// Host code-fence rules can wrap code independently of its pre. Embedded
+// source follows the pre's whitespace so the body can scroll horizontally.
+const EMBEDDED_CODE_STYLE: React.CSSProperties = { whiteSpace: 'inherit' };
+
+/**
+ * The fence's original text. By default it owns its border, background and
+ * natural height, including before the first render. Embedded source fills
+ * its parent's body with transparent chrome and scrolls on both axes on
+ * screen. Printing lets embedded source grow and wrap to the paper width.
+ */
+export const DiagramInlineSource: React.FC<{
+  block: Block;
+  kind: DiagramKind;
+  /** Reuse the parent's frame. Defaults to false for standalone source. */
+  embedded?: boolean;
+}> = ({ block, kind, embedded = false }) => (
+  <pre tabIndex={embedded ? 0 : undefined} className={embedded
+    ? 'm-0 h-full w-full overflow-auto border-0 bg-transparent p-4 text-[13px] print:h-auto print:overflow-visible print:whitespace-pre-wrap'
+    : 'rounded-lg text-[13px] overflow-x-auto bg-muted/50 border border-border/30 p-4'}>
+    <code className={`${embedded ? 'font-mono' : 'pn-code font-mono'} language-${block.language?.trim().split(/\s+/, 1)[0] ?? kind}`} style={embedded ? EMBEDDED_CODE_STYLE : undefined}>{block.content}</code>
   </pre>
 );
 
