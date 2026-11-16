@@ -26,11 +26,12 @@
  * Build the binary first (see inbox.spec.ts), then `bun run test:e2e:inbox`.
  * Shots and the video go to PLANNOTATOR_TOUR_SHOTS (default .local/proof/tour).
  */
-import { devices, expect, test, webkit, type Browser, type BrowserContext, type Page } from '@playwright/test';
+import { devices, expect, test, webkit, type Browser, type BrowserContext, type Page } from './inbox-test';
 import { spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { NO_BROWSER } from '../helpers/no-browser';
+import { savedConfig } from '../helpers/saved-config';
 import { SimAgent, scratchProject } from '../../scripts/inbox-sim';
 import { inboxScratch, rememberInboxOf, removeInboxScratch } from './inbox-scratch';
 
@@ -86,10 +87,7 @@ async function agentWrites(w: World, body: string, subject: string): Promise<str
   }
 }
 
-function config(w: World): Record<string, any> {
-  const file = join(w.dataDir, 'config.json');
-  return existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {};
-}
+const config = (w: World): Record<string, any> => savedConfig(w.dataDir);
 
 /** The person's list as the server holds it, without what moves on its own. */
 async function ownList(w: World): Promise<string> {
@@ -803,7 +801,8 @@ test('an iPhone in WebKit, "Press Send": the pick leaves the keyboard down, and 
       // The pick: focus on To, never on the message, so nothing raises a keyboard.
       await expect(page.locator('[data-compose] [data-compose-to]')).toBeFocused();
       await expect(field).not.toBeFocused();
-      expect(await sendFree(), `${width}: Send is free with the keyboard down`).toBe(true);
+      // To's sheet takes about a quarter of a second to leave the bottom of the screen, where Send is.
+      await expect.poll(sendFree, { message: `${width}: Send is free with the keyboard down` }).toBe(true);
       await expect(coach(page)).toBeVisible();
 
       // A tap on the message raises it all the same: the card gives way, Send and Exit stay.

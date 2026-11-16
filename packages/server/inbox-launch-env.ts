@@ -23,7 +23,7 @@
  *   PATH folders.
  * - `launchSettingsEnv`: what goes in the per-launch settings FILE's `env`
  *   (reaches only our session, survives respawn, never shows in `ps`): the
- *   login shell's `CLAUDE_*` values and PATH, never the rest of it.
+ *   login shell's `CLAUDE_*` values, PATH and LAUNCH_SHELL_SWITCHES, never the rest of it.
  *
  * Variable values are never logged; only names.
  */
@@ -37,12 +37,41 @@ const PER_SESSION_CLAUDE =
   /^(CLAUDECODE|CLAUDE_PID|CLAUDE_CODE_ENTRYPOINT|CLAUDE_CODE_EXECPATH|CLAUDE_CODE_CHILD_SESSION|CLAUDE_CODE_SESSION_.*|CLAUDE_JOB_DIR|CLAUDE_PROJECT_DIR|CLAUDE_CODE_MESSAGING_.*)$/;
 import { userInfo } from "node:os";
 import { INBOX_LAUNCH_FULL_PERMISSIONS_ENV } from "@plannotator/core/inbox-permission";
+import { envPathOf, foldEnvPath, joinPathFolders, pathFoldersOf } from "./env-path";
 
 /**
  * Never in a spawn: every Plannotator name (markers, data dir, ports, test switches), the other hosts' session
  * markers (an Inbox started from inside a Pi session has Pi's: its session, its file, its model).
  */
 const SPAWN_DROP = /^(PLANNOTATOR_.*|CODEX_THREAD_ID|PI_SESSION_ID|PI_SESSION_FILE|PI_PROVIDER|PI_MODEL|PI_REASONING_LEVEL)$/;
+
+/**
+ * The Plannotator switches a launch keeps from the person's LOGIN shell (approval "inbox-launched-agent-note"):
+ * plan review, and the off switches for what a session's Plannotator sends out or keeps a copy of. Only these
+ * names, only from the login shell read (never the Inbox's own env, which may be an agent's or a test's), and
+ * only into the launched session itself: Claude Code's per-launch settings file, Pi's process. Never a
+ * marker, data dir, port, URL, connect or test name, and never a switch a launch needs on (the mod, the Inbox
+ * tool). `environment.md` lists them.
+ */
+export const LAUNCH_SHELL_SWITCHES = [
+  "PLANNOTATOR_PLAN_REVIEW",
+  "PLANNOTATOR_AI",
+  "PLANNOTATOR_SHARE",
+  "PLANNOTATOR_JINA",
+  "PLANNOTATOR_ANNOTATE_HISTORY",
+  "PLANNOTATOR_FEEDBACK_HISTORY",
+  "PLANNOTATOR_GUIDE_HISTORY",
+] as const;
+
+/** The login shell's LAUNCH_SHELL_SWITCHES, as it set them. */
+export function launchShellSwitches(login: Readonly<LaunchEnv>): LaunchEnv {
+  const out: LaunchEnv = {};
+  for (const name of LAUNCH_SHELL_SWITCHES) {
+    const value = login[name];
+    if (typeof value === "string") out[name] = value;
+  }
+  return out;
+}
 
 /** Claude Code's own switch for bypass mode without the acceptance dialog. */
 export const CLAUDE_SKIP_PERMISSIONS_ENV = "CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS";
@@ -84,15 +113,15 @@ export function launchStartOf(input: {
  * passed, a full launch included (its bypass is `--permission-mode bypassPermissions`; the export would be
  * inert anyway, as Claude ignores it while any PermissionRequest hook exists, the plugin's included).
  */
-export function launchSpawnEnv(env: Readonly<LaunchEnv>): LaunchEnv {
-  return Object.fromEntries(Object.entries(env).filter(([name]) => !SPAWN_DROP.test(name) && !PER_SESSION_CLAUDE.test(name) && name !== CLAUDE_SKIP_PERMISSIONS_ENV));
+export function launchSpawnEnv(env: Readonly<LaunchEnv>, platform: NodeJS.Platform = process.platform): LaunchEnv {
+  // Windows: PATH under the one key `PATH`, whatever its spelling (`Path`), so a later copy that sets it is the one used.
+  return foldEnvPath(Object.fromEntries(Object.entries(env).filter(([name]) => !SPAWN_DROP.test(name) && !PER_SESSION_CLAUDE.test(name) && name !== CLAUDE_SKIP_PERMISSIONS_ENV)), platform);
 }
 
-/** The Inbox's own env for the calls that are not a start: the same filter, `extraPath` after its PATH. */
-export function launchPlainEnv(own: Readonly<Record<string, string | undefined>>, extraPath: readonly string[] = []): LaunchEnv {
-  const out = launchSpawnEnv(stringsOf(own));
-  const path = [...(out.PATH ?? "").split(":"), ...extraPath].filter(Boolean);
-  out.PATH = [...new Set(path)].join(":");
+/** The Inbox's own env for the calls that are not a start: the same filter, `extraPath` after its PATH (`;`-joined on Windows). */
+export function launchPlainEnv(own: Readonly<Record<string, string | undefined>>, extraPath: readonly string[] = [], platform: NodeJS.Platform = process.platform): LaunchEnv {
+  const out = launchSpawnEnv(stringsOf(own), platform);
+  out.PATH = joinPathFolders([...pathFoldersOf(out.PATH, platform), ...extraPath], platform);
   return out;
 }
 
@@ -109,7 +138,10 @@ export function launchSettingsEnv(
     if (name.startsWith("CLAUDE_") && !PER_SESSION_CLAUDE.test(name) && name !== CLAUDE_SKIP_PERMISSIONS_ENV) out[name] = value;
   }
   // A session gets its supervisor's env, whoever started that: the file is the one way the login PATH reaches it.
-  if (login.PATH) out.PATH = login.PATH;
+  const loginPath = envPathOf(login);
+  if (loginPath) out.PATH = loginPath;
+  // The person's own Plannotator switches (LAUNCH_SHELL_SWITCHES): here, never in the supervisor's env.
+  Object.assign(out, launchShellSwitches(login));
   if (input.dataDir) out.PLANNOTATOR_DATA_DIR = input.dataDir;
   out.PLANNOTATOR_LAUNCH = input.launchId;
   out.PLANNOTATOR_LAUNCH_KEY = input.key;

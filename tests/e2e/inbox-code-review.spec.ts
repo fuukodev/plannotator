@@ -27,7 +27,7 @@
  * PLANNOTATOR_E2E_VIDEO=1.
  */
 
-import { chromium, expect, test, type Browser, type BrowserContext, type Locator, type Page } from '@playwright/test';
+import { chromium, expect, test, type Browser, type BrowserContext, type Locator, type Page } from './inbox-test';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -37,6 +37,7 @@ import { NO_BROWSER } from '../helpers/no-browser';
 import { expectNoBlankFiles } from './on-screen-files';
 import { markTourDecided } from '../helpers/tour-decided';
 import { inboxScratch, rememberInboxOf, removeInboxScratch } from './inbox-scratch';
+import { diffRowBox } from './diff-row-box';
 
 const repo = resolve(__dirname, '../..');
 const binary = resolve(process.env.PLANNOTATOR_E2E_BINARY ?? join(repo, '.local/plannotator'));
@@ -222,6 +223,7 @@ test.beforeAll(async ({ browser }: { browser: Browser }) => {
   const env: Record<string, string> = {
     PATH: process.env.PATH ?? '',
     HOME: root,
+    PLANNOTATOR_RELAY_URL: 'http://127.0.0.1:9',
     PLANNOTATOR_DATA_DIR: dataDir,
     PLANNOTATOR_INBOX_CONNECT: '0',
     PLANNOTATOR_UPDATE_CHECK: '0',
@@ -1047,7 +1049,7 @@ test('a long line scrolls sideways in the code by wheel or trackpad, and the pag
   await shell.evaluate((el) => el.scrollIntoView({ block: 'start' }));
   await settled(body);
 
-  const line = (await shell.locator('[data-line-type]').first().boundingBox())!;
+  const line = await diffRowBox(shell.locator('[data-line-type]').first());
   const shellBox = (await shell.boundingBox())!;
   const top = await body.evaluate((el) => el.scrollTop);
   await page.mouse.move(shellBox.x + shellBox.width * 0.7, line.y + 30);
@@ -1141,7 +1143,7 @@ test('a phone: a sideways drag on the code scrolls it, and the page does not mov
     await settled(body);
 
     const shellBox = (await shell.boundingBox())!;
-    const line = (await shell.locator('[data-line-type]').nth(4).boundingBox())!;
+    const line = await diffRowBox(shell.locator('[data-line-type]').nth(4));
     const top = await body.evaluate((el) => el.scrollTop);
     await fingerDrag(page, { x: shellBox.x + shellBox.width * 0.8, y: line.y + line.height / 2 }, { x: -170, y: 0 }, async () => {
       await expect.poll(scrolled).toBeGreaterThan(0);

@@ -11,7 +11,7 @@
  * .local/proof/guides/ with a contact sheet.
  */
 
-import { expect, test, type Browser, type BrowserContext, type Page } from '@playwright/test';
+import { expect, test, type Browser, type BrowserContext, type Page } from './inbox-test';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
@@ -20,6 +20,7 @@ import { FIXTURE_V1_LOCAL, FIXTURE_PATCH_TS_JSON } from '../../packages/core/gui
 import { SimAgent, scratchProject } from '../../scripts/inbox-sim';
 import { NO_BROWSER } from '../helpers/no-browser';
 import { inboxScratch, rememberInboxOf, removeInboxScratch, stopScratchInbox } from './inbox-scratch';
+import { diffRowBox } from './diff-row-box';
 
 const repo = resolve(__dirname, '../..');
 const binary = resolve(process.env.PLANNOTATOR_E2E_BINARY ?? join(repo, '.local/plannotator'));
@@ -69,6 +70,7 @@ test.beforeAll(async ({ browser }: { browser: Browser }) => {
   const env = {
     PATH: process.env.PATH ?? '',
     HOME: home,
+    PLANNOTATOR_RELAY_URL: 'http://127.0.0.1:9',
     PLANNOTATOR_DATA_DIR: dataDir,
     PLANNOTATOR_INBOX_CONNECT: '0',
     PLANNOTATOR_UPDATE_CHECK: '0',
@@ -345,8 +347,8 @@ test('a comment on the guide\'s diffs: a line and a range, listed beside the gui
   }).toBeLessThan(24 + 32);
 
   // A range: drag across the new side's line numbers 2 to 3, as in the review app.
-  const from = (await added(2).boundingBox())!;
-  const to = (await added(3).boundingBox())!;
+  const from = await diffRowBox(added(2));
+  const to = await diffRowBox(added(3));
   await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
   await page.mouse.down();
   await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 6 });

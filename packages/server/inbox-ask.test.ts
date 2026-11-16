@@ -164,9 +164,11 @@ describe("the conversation file", () => {
     const { thread_id } = await agentSends(client, project, "session-a", "Ship it?");
     expect(await conversation(server, thread_id)).toBeNull();
 
-    const response = await ask(server, thread_id, "turn-0001", "Why this region?", { passage: "us-east-1" });
+    const source = '[Quoted from plan.md (/work/plan.md, attached to this thread; the version sent, unchanged), line 4, under "Region".]';
+    const response = await ask(server, thread_id, "turn-0001", "Why this region?", { passage: "us-east-1", source });
     expect(response.status).toBe(200);
-    expect(((await response.json()) as { turn: unknown }).turn).toMatchObject({ id: "turn-0001", session: "session-a", host: "claude-code", question: "Why this region?", passage: "us-east-1" });
+    // A Side's source is kept with the turn, so Ask again sends it to the agent again.
+    expect(((await response.json()) as { turn: unknown }).turn).toMatchObject({ id: "turn-0001", session: "session-a", host: "claude-code", question: "Why this region?", passage: "us-east-1", source });
 
     const file = askFile(dataDir, thread_id);
     expect(statSync(file).mode & 0o777).toBe(0o600);
@@ -256,6 +258,8 @@ describe("the conversation file", () => {
       { turn_id: "turn-0001", question: "   " },
       { turn_id: "turn-0001", question: "x".repeat(INBOX_ASK_TEXT_MAX + 1) },
       { turn_id: "turn-0001", question: "Why?", passage: 7 },
+      { turn_id: "turn-0001", question: "Why?", source: 7 },
+      { turn_id: "turn-0001", question: "Why?", source: "x".repeat(INBOX_ASK_TEXT_MAX + 1) },
     ]) {
       expect((await fromWindow(server, askPath(thread_id), body)).status).toBe(422);
     }
@@ -519,10 +523,9 @@ describe("the gate", () => {
     expect((await conversation(server, thread_id))?.turns.map((turn) => turn.id)).toEqual(["turn-0001"]);
   });
 
-  test("over the tailnet the owner asks and reads; a guest does neither, and hears nothing on the stream", async () => {
+  test("over the tailnet the owner asks and reads, and hears it on the stream", async () => {
     const MAGIC = "macbook-pro.tail0000.ts.net";
     const OWNER = "owner@example.com";
-    const GUEST = "guest@example.com";
     const serve = new Map<number, string>();
     const fakeTailscale: TailscaleRunner = (args) => {
       const ok = (stdout = "") => ({ status: 0, stdout, stderr: "" });
@@ -545,8 +548,6 @@ describe("the gate", () => {
     const project = join(root, "api");
     mkdirSync(dataDir, { recursive: true });
     mkdirSync(project, { recursive: true });
-    // The tailnet's allowed logins come from config.json in the data dir (loadConfig reads the env's).
-    writeFileSync(join(dataDir, "config.json"), JSON.stringify({ inboxTailscaleAllow: [GUEST] }));
     const previous = { data: process.env.PLANNOTATOR_DATA_DIR, ts: process.env.PLANNOTATOR_INBOX_TAILSCALE };
     process.env.PLANNOTATOR_DATA_DIR = dataDir;
     delete process.env.PLANNOTATOR_INBOX_TAILSCALE;
@@ -567,25 +568,9 @@ describe("the gate", () => {
 
       const owner = await through(OWNER, askPath(thread_id), { turn_id: "turn-0001", question: "Private words" });
       expect(owner.status).toBe(200);
-      const guestStream = listen(await through(GUEST, "/api/inbox/events?window=window-guest"));
       const ownerStream = listen(await through(OWNER, "/api/inbox/events?window=window-owner"));
       await Bun.sleep(100);
 
-      for (const response of [
-        await through(GUEST, askPath(thread_id)),
-        await through(GUEST, askPath(thread_id), { turn_id: "turn-0002", question: "A guest's question" }),
-        await through(GUEST, askPath(thread_id, "/seen"), { seen_at: new Date().toISOString() }),
-        await through(GUEST, askPath(thread_id, "/end"), {}),
-        await through(GUEST, "/api/ai/capabilities"),
-        await through(GUEST, "/api/ai/sessions"),
-        await through(GUEST, "/api/ai/session", { context: { mode: "annotate" } }),
-        await through(GUEST, "/api/ai/query", { sessionId: "x", prompt: "y" }),
-      ]) {
-        expect(response.status).toBe(403);
-        const body = await response.text();
-        expect(JSON.parse(body).code).toBe("owner_only");
-        expect(body).not.toContain("Private words");
-      }
       // The agent's client is this computer's: not the owner's either, over the tailnet.
       const agentRoute = await through(OWNER, `${inboxAskBridgeBase("session-a")}${SESSION_BRIDGE_POLL_PATH}`, {});
       expect(agentRoute.status).toBe(403);
@@ -593,11 +578,9 @@ describe("the gate", () => {
       expect((await through(OWNER, askPath(thread_id), { turn_id: "turn-0003", question: "Mine" })).status).toBe(200);
       await Bun.sleep(100);
       expect(ownerStream.frames).toContain("ask");
-      expect(guestStream.frames).toContain("hello");
-      expect(guestStream.frames).not.toContain("ask");
       const read = await through(OWNER, askPath(thread_id));
       expect(((await read.json()) as { conversation: InboxAskConversation }).conversation.turns.map((turn) => turn.id)).toEqual(["turn-0001", "turn-0003"]);
-      await Promise.all([guestStream.stop(), ownerStream.stop()]);
+      await ownerStream.stop();
     } finally {
       if (previous.data === undefined) delete process.env.PLANNOTATOR_DATA_DIR;
       else process.env.PLANNOTATOR_DATA_DIR = previous.data;

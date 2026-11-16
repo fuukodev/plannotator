@@ -14,7 +14,7 @@ import {
   type AnnotateAgentTerminalSide,
 } from '@plannotator/core/agent-terminal';
 import type { DiffLineBgIntensity, ReviewDefaults } from '@plannotator/core/config-types';
-import { isFaviconStyle, type FaviconStyle } from '@plannotator/core/favicon';
+import { DEFAULT_FAVICON_STYLE, isFaviconStyle, type FaviconStyle } from '@plannotator/core/favicon-style';
 import {
   agentSwitchConfigValue,
   isAgentSwitchName,
@@ -192,7 +192,7 @@ export const SETTINGS = {
     toServer: (v: ThemePair) => ({ theme: { mode: v.mode, light: v.light, dark: v.dark } }),
   },
   faviconStyle: {
-    defaultValue: 'totman' as FaviconStyle,
+    defaultValue: DEFAULT_FAVICON_STYLE as FaviconStyle,
     fromCookie: () => {
       const v = storage.getItem('plannotator-favicon');
       return isFaviconStyle(v) ? v : undefined;
@@ -275,6 +275,22 @@ export const SETTINGS = {
     fromCookie: () =>
       normalizeFontFamilyName(storage.getItem('plannotator-document-font-family') ?? '') || undefined,
     toCookie: (value: string) => storage.setItem('plannotator-document-font-family', value),
+    serverKey: undefined, fromServer: undefined, toServer: undefined,
+  },
+
+  /**
+   * Show each rendered block's source lines in plan review and annotate
+   * (#1650). Default OFF: today's document with no gutter. Cookie-only, like
+   * Text size and Document font. `42` for one line, `42–45` for a span.
+   */
+  documentSourceLineNumbers: {
+    defaultValue: false as boolean,
+    fromCookie: () => {
+      const value = storage.getItem('plannotator-document-source-line-numbers');
+      return value === 'true' ? true : value === 'false' ? false : undefined;
+    },
+    toCookie: (value: boolean) =>
+      storage.setItem('plannotator-document-source-line-numbers', String(value)),
     serverKey: undefined, fromServer: undefined, toServer: undefined,
   },
 

@@ -293,8 +293,13 @@ jobs:
     if: ${{ !cancelled() && needs.build.result == 'success' && needs.plan.result == 'success' }}
     # The repo variable E2E_RUNNER picks the machine for the shards (e.g. a
     # Namespace label); unset, they run on GitHub's own ubuntu-24.04. Setting
-    # it moves them without a PR, and deleting it moves them back.
-    runs-on: ${{ vars.E2E_RUNNER || 'ubuntu-24.04' }}
+    # it moves them without a PR, and deleting it moves them back. A PR from a
+    # fork stays on ubuntu-24.04 whatever it says: a self-hosted runner must
+    # never run a fork's code, and once a fork PR has the `ci:e2e` label, every
+    # later push from its author would run there unreviewed. A PR a bot opened
+    # (the PR author's account type is Bot) stays on ubuntu-24.04 too: its freshly
+    # bumped packages run their install scripts unreviewed.
+    runs-on: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && vars.E2E_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 30
     container:
       image: mcr.microsoft.com/playwright:v${{ needs.build.outputs.playwright }}-noble
@@ -309,18 +314,29 @@ jobs:
         with:
           persist-credentials: false
 
+      # Bun's zip and ripgrep's tarball are kept between runs by version and
+      # checksum (in $HOME, the container's /github/home), checked every time,
+      # and on a miss downloaded with the job's token.
+      - name: Restore the Bun and ripgrep downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ci-tools/e2e
+          key: e2e-tools-bun-1.4.4-bf8ccbfb2b0b-rg-14.1.1-4cf9f2741e6c
+
       # setup-bun unpacks with `unzip`, which the image lacks; the same release
       # zip setup-bun fetches, checked against its published SHA-256.
       - name: Install Bun 1.4.4
         env:
           BUN_ZIP_SHA256: bf8ccbfb2b0b80159e0f9a6d15c55317add8077534dbc6130a3edb52fccb395c
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
           dir="$RUNNER_TEMP/bun"
-          mkdir -p "$dir"
-          curl -fsSL --retry 5 -o "$dir/bun.zip" https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-linux-x64.zip
-          echo "$BUN_ZIP_SHA256  $dir/bun.zip" | sha256sum -c -
-          python3 -I -m zipfile -e "$dir/bun.zip" "$dir"
+          zip="$HOME/.cache/ci-tools/e2e/bun-linux-x64.zip"
+          mkdir -p "$dir" "$(dirname "$zip")"
+          [ -f "$zip" ] || bash scripts/ci-fetch-release-asset.sh https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-linux-x64.zip "$zip"
+          echo "$BUN_ZIP_SHA256  $zip" | sha256sum -c -
+          python3 -I -m zipfile -e "$zip" "$dir"
           chmod +x "$dir/bun-linux-x64/bun"
           ln -s bun "$dir/bun-linux-x64/bunx"
           echo "$dir/bun-linux-x64" >> "$GITHUB_PATH"
@@ -340,13 +356,15 @@ jobs:
       - name: Install ripgrep
         env:
           RG_SHA256: 4cf9f2741e6c465ffdb7c26f38056a59e2a2544b51f7cc128ef28337eeae4d8e
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
           dir="$RUNNER_TEMP/rg"
-          mkdir -p "$dir"
-          curl -fsSL --retry 5 -o "$dir/rg.tar.gz" https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-unknown-linux-musl.tar.gz
-          echo "$RG_SHA256  $dir/rg.tar.gz" | sha256sum -c -
-          tar -xzf "$dir/rg.tar.gz" -C "$dir" --strip-components=1
+          tarball="$HOME/.cache/ci-tools/e2e/ripgrep-14.1.1-x86_64-unknown-linux-musl.tar.gz"
+          mkdir -p "$dir" "$(dirname "$tarball")"
+          [ -f "$tarball" ] || bash scripts/ci-fetch-release-asset.sh https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-unknown-linux-musl.tar.gz "$tarball"
+          echo "$RG_SHA256  $tarball" | sha256sum -c -
+          tar -xzf "$tarball" -C "$dir" --strip-components=1
           echo "$dir" >> "$GITHUB_PATH"
           "$dir/rg" --version
 
@@ -414,6 +432,20 @@ jobs:
           path: .local/proof/
           if-no-files-found: ignore
 
+      # A failed test's page as Playwright left it: error-context.md (the page's
+      # accessibility snapshot) and its screenshot, nothing a passing test wrote.
+      # The pages are the specs' sandboxed Inboxes; the test step has no token.
+      - name: Keep the failed tests' snapshots
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-failed-tests-${{ matrix.shard }}-${{ github.run_attempt }}
+          path: |
+            .local/test-results/**/error-context.md
+            .local/test-results/**/test-failed-*.png
+          if-no-files-found: ignore
+          retention-days: 7
+
       # Off a PR: the spec files this shard failed, for the blame job.
       - name: Record the specs this shard failed
         if: failure() && github.event_name != 'pull_request'
@@ -463,13 +495,15 @@ jobs:
       - name: Install ripgrep
         env:
           RG_SHA256: 4cf9f2741e6c465ffdb7c26f38056a59e2a2544b51f7cc128ef28337eeae4d8e
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
           dir="$RUNNER_TEMP/rg"
-          mkdir -p "$dir"
-          curl -fsSL --retry 5 -o "$dir/rg.tar.gz" https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-unknown-linux-musl.tar.gz
-          echo "$RG_SHA256  $dir/rg.tar.gz" | sha256sum -c -
-          tar -xzf "$dir/rg.tar.gz" -C "$dir" --strip-components=1
+          tarball="$HOME/.cache/ci-tools/e2e/ripgrep-14.1.1-x86_64-unknown-linux-musl.tar.gz"
+          mkdir -p "$dir" "$(dirname "$tarball")"
+          [ -f "$tarball" ] || bash scripts/ci-fetch-release-asset.sh https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-unknown-linux-musl.tar.gz "$tarball"
+          echo "$RG_SHA256  $tarball" | sha256sum -c -
+          tar -xzf "$tarball" -C "$dir" --strip-components=1
           echo "$dir" >> "$GITHUB_PATH"
 
       # None when every failed shard died before it could record them: the

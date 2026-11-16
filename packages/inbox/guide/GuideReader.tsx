@@ -51,7 +51,10 @@ import { useConfigValue } from '@plannotator/ui/config';
 import { getIdentity } from '@plannotator/ui/utils/identity';
 import { DiffStyleSwitch } from '../components/DiffStyleSwitch';
 import { reviewSourceLine } from './sourceLine';
+import { withChapterMermaid, withOverviewMermaid } from './overviewMermaid';
 import { usePhone } from '../phone';
+import { useCommentPictures } from '../commentPictures';
+import type { ImageAttachment } from '@plannotator/ui/types';
 
 /** A line range the review app selects on (Pierre's). */
 type SelectedLineRange = NonNullable<AllFilesCodeViewProps['pendingSelection']>;
@@ -210,6 +213,8 @@ function Reader({
   fileOpenIn,
   selectionActions,
   renderOverviewDiagram,
+  renderChapterDiagram,
+  chapterDiagramsFolded = false,
   renderOverviewFigure,
   renderHeadActions,
   highlight = null,
@@ -292,24 +297,25 @@ function Reader({
   // guide, or any review with Code review off, leaves it unsigned as on main.
   const signs = bare || signComments;
   const signed = useCallback((): { author?: string } => (signs ? { author: getIdentity() } : {}), [signs]);
+  const pictures = useCommentPictures();
   // Line comments go to the diffs; global comments (on the whole review) to the guide's header.
   const annotations = useMemo(() => (comments ? comments.annotations.filter((a) => a.scope !== 'general') : NO_ANNOTATIONS), [comments?.annotations]);
   const globalAnnotations = useMemo(() => (comments ? comments.annotations.filter((a) => a.scope === 'general') : NO_ANNOTATIONS), [comments?.annotations]);
   /** The global comment composer, open on the header's "Global comment" button. */
   const [globalAnchor, setGlobalAnchor] = useState<HTMLElement | null>(null);
   const globalDraftKey = comments ? `guide-global:${comments.draftScope}` : null;
-  const addGlobalComment = useCallback((text: string) => {
+  const addGlobalComment = useCallback((text: string, images?: ImageAttachment[]) => {
     const wiring = commentsRef.current;
     const trimmed = text.trim();
     setGlobalAnchor(null);
-    if (!wiring || !trimmed) return;
+    if (!wiring || (!trimmed && !images?.length)) return;
     const draftKey = `guide-global:${wiring.draftScope}`;
     // The review app's general comment: no file and no lines (its '' / 0 / 0 sentinels).
     void wiring
-      .onSave({ id: newCommentId(), type: 'comment', scope: 'general', filePath: '', lineStart: 0, lineEnd: 0, side: 'new', text: trimmed, ...signed(), createdAt: Date.now() })
+      .onSave({ id: newCommentId(), type: 'comment', scope: 'general', filePath: '', lineStart: 0, lineEnd: 0, side: 'new', text: trimmed, ...(images?.length ? { images } : {}), ...signed(), createdAt: Date.now() })
       // Refused (too long, the thread resolved elsewhere, offline): the words wait in the composer for the next open.
       .then((saved) => {
-        if (!saved) restoreCommentDraft(draftKey, text);
+        if (!saved) restoreCommentDraft(draftKey, text, images);
       });
   }, [signed]);
   const addComment = useCallback<GuideDiffComments['onAddAnnotationForFile']>(
@@ -522,6 +528,10 @@ function Reader({
     // Only a new target moves the view.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scrollTarget]);
+  // Every guide the Inbox opens draws its Mermaid overview diagram, whatever the host draws itself.
+  const drawOverviewDiagram = useMemo(() => withOverviewMermaid(renderOverviewDiagram), [renderOverviewDiagram]);
+  // And each chapter's diagram (format version 5), at the top of the chapter's code pane.
+  const drawChapterDiagram = useMemo(() => withChapterMermaid(renderChapterDiagram), [renderChapterDiagram]);
   const host = useMemo(
     () => ({
       files,
@@ -531,7 +541,9 @@ function Reader({
       ...(phone || asItIs || hostDiffControls ? {} : { renderSectionTab }),
       // A walkthrough's chapter can be words alone: nothing is missing, so it says that and not "out of date".
       ...(asItIs && { renderSectionEmpty: () => <p className="ib-rv-nocode" data-section-no-code="">No code in this chapter.</p> }),
-      ...(renderOverviewDiagram ? { renderOverviewDiagram } : {}),
+      renderOverviewDiagram: drawOverviewDiagram,
+      renderChapterDiagram: drawChapterDiagram,
+      ...(chapterDiagramsFolded ? { chapterDiagramsFolded: true } : {}),
       ...(renderOverviewFigure ? { renderOverviewFigure } : {}),
       ...(renderHeadActions ? { renderHeadActions } : {}),
       ...(globalComments ? { globalComments } : {}),
@@ -543,7 +555,7 @@ function Reader({
       ...(bare ? { flushFiles: true } : {}),
       ...(collapseAll ? { collapseAll } : {}),
     }),
-    [files, asItIs, getDiffRendererProps, revealFile, phone, hostDiffControls, renderSectionTab, renderOverviewDiagram, renderOverviewFigure, renderHeadActions, globalComments, savedDiffStyle, fetchFileContent, collapseAll, bare],
+    [files, asItIs, getDiffRendererProps, revealFile, phone, hostDiffControls, renderSectionTab, drawOverviewDiagram, drawChapterDiagram, chapterDiagramsFolded, renderOverviewFigure, renderHeadActions, globalComments, savedDiffStyle, fetchFileContent, collapseAll, bare],
   );
 
   // The window's wrap for a code span, for the viewer's own inline parser.
@@ -574,8 +586,7 @@ function Reader({
           anchorEl={globalAnchor}
           contextText=""
           isGlobal
-          // The export prints a global comment's words only.
-          allowImages={false}
+          allowImages={pictures}
           // The words typed survive a close (Escape, a click outside) and a refused save, one draft per message.
           draftKey={globalDraftKey}
           onSubmit={addGlobalComment}

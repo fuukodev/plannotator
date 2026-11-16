@@ -39,7 +39,7 @@ import {
   type SkillCatalogEntry,
   type SkillExportContent,
 } from '@plannotator/ui/utils/skillReferences';
-import { inboxReviewSkill } from '@plannotator/core/inbox-review';
+import { INBOX_BUILTIN_SKILL_ROOT, inboxReviewSkill } from '@plannotator/core/inbox-review';
 import { shapeSkill } from '@plannotator/core/shape-skill';
 import { inboxApi } from './api';
 import { annotationOf } from './attachments';
@@ -107,14 +107,39 @@ export function setReviewSkillsShape(on: boolean): void {
 }
 
 /**
+ * Chapter diagrams as this window last read it (App.tsx sets it from the settings, Settings → Capabilities): the review
+ * skills' chapter diagram lines go only while it is on. On until the settings say otherwise.
+ */
+let reviewSkillsDiagrams = true;
+
+/** The window read Chapter diagrams: the review skills pasted from now on carry their diagram lines only while on. */
+export function setReviewSkillsDiagrams(on: boolean): void {
+  reviewSkillsDiagrams = on;
+}
+
+/**
  * A Plannotator skill's instructions (root `plannotator`: the review skills the
  * Inbox lists while Code review is on, and `/shape` while Shape is on), from the window's own text, never read
- * from disk. Undefined for any other skill. A review skill's drawing lines ride `shape` (Shape's switch).
+ * from disk. Undefined for any other skill. A review skill's drawing lines ride `shape` (Shape's switch), and its
+ * chapter diagram lines `diagrams` (Chapter diagrams).
  */
-export function builtinSkillContent(ref: SkillCatalogEntry, shape: boolean = reviewSkillsShape): SkillExportContent | undefined {
+export function builtinSkillContent(ref: SkillCatalogEntry, shape: boolean = reviewSkillsShape, diagrams: boolean = reviewSkillsDiagrams): SkillExportContent | undefined {
   if (ref.root !== 'plannotator') return undefined;
-  const skill = inboxReviewSkill(ref.name, { shape }) ?? shapeSkill(ref.name);
+  const skill = inboxReviewSkill(ref.name, { shape, diagrams }) ?? shapeSkill(ref.name);
   return skill ? { content: skill.body, truncated: false, dir: '', path: '' } : undefined;
+}
+
+/**
+ * The block a verdict asking for changes carries (`pull-handoff-pushes`: the next round sends only what changed):
+ * `/review-recheck`'s, the same block as when the person names it in a reply. Only for the session that wrote the
+ * review (`toReviewer`): another one never saw it, so it gets no block and its next round covers the whole change.
+ * '' for an approval.
+ */
+export function verdictRecheckBlock(verdict: 'approved' | 'changes_requested', toReviewer: boolean): string {
+  if (verdict !== 'changes_requested' || !toReviewer) return '';
+  const ref: SkillCatalogEntry = { name: 'review-recheck', root: INBOX_BUILTIN_SKILL_ROOT, humanOnly: true };
+  const content = builtinSkillContent(ref);
+  return content ? composeInboxSkillsBlock([ref], new Map([[ref.name, content]]), INBOX_REPLY_SKILL_AUDIENCE) : '';
 }
 
 /**

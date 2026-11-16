@@ -22,6 +22,7 @@ import {
 } from '@plannotator/core/inbox-types';
 import { agentName } from '../tags';
 import { stackLink, startLayer } from './topology';
+import { person, possessiveTail, wordsText, type Words } from './words';
 
 export { inboxPullLabel };
 
@@ -159,7 +160,7 @@ let graphemes: Intl.Segmenter | null = null;
  * `text` within `max` characters (code points, the unit the server and the name chip count), cut with "…" between two
  * graphemes: never inside an emoji sequence (a ZWJ family, a flag's two letters) or between a letter and its marks.
  */
-function cutText(text: string, max: number): string {
+export function cutText(text: string, max: number): string {
   if ([...text].length <= max) return text;
   graphemes ??= new Intl.Segmenter(undefined, { granularity: 'grapheme' });
   let kept = '';
@@ -185,25 +186,22 @@ export function pullTitleLine(title: string): string {
 }
 
 /** A branch name when `inboxPullSafeBranch` passes it, else null (then it is left out). */
-function safeBranch(name: string): string | null {
+export function safeBranch(name: string): string | null {
   return inboxPullSafeBranch(name) ? name : null;
 }
 
 const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,62})$/;
 /** The author's login when it is one (GitHub's or GitLab's letters), else "a teammate". */
-const authorOf = (pull: Pick<InboxPull, 'author'>) => (pull.author && LOGIN.test(pull.author) ? pull.author : 'a teammate');
-const REPO = /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)+$/;
+export const authorOf = (pull: Pick<InboxPull, 'author'>) => (pull.author && LOGIN.test(pull.author) ? pull.author : 'a teammate');
+export const REPO = /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)+$/;
 
 /** The PR's web page when it is one on the PR's own host (`https://<host>/…`, no spaces or markdown), else null. */
-function pullUrl(pull: Pick<InboxPull, 'url' | 'host'>): string | null {
+export function pullUrl(pull: Pick<InboxPull, 'url' | 'host'>): string | null {
   return pull.url.startsWith(`https://${pull.host}/`) && /^https:\/\/[^\s<>()[\]`"']+$/.test(pull.url) ? pull.url : null;
 }
 
 /** What a hand-off asks the agent for first: a guided review (the default), or the person's own curation. */
 export type PullHandoffAsk = { kind: 'guide' } | { kind: 'custom'; words: string };
-
-/** The person's own words for a custom curation are kept to this many characters. */
-export const PULL_HANDOFF_CUSTOM_MAX = 1000;
 
 /** A stack's guided review, after step 1's `/review-curate` (approval "stack-show-me", q-55141171). */
 const STACK_WALK = 'Walk it layer by layer, in landing order, with what to watch in each.';
@@ -247,10 +245,10 @@ export function handoffStack(stack: InboxPullStack, links: Readonly<Record<strin
  * Step 2's line on using the thread, every PR's (the owner on a teammate's PR: "You should also be encouraged to use the
  * review thread with the user"; approved in `pull-handoff-pushes`).
  */
-const PULL_HANDOFF_TALK = 'Bring up what you notice or want to ask without waiting for me.';
+export const PULL_HANDOFF_TALK = 'Bring up what you notice or want to ask without waiting for me.';
 
 /** " on dana/web-app (a fork)" after a branch whose head is on a fork, so the agent knows where it lives; else nothing. */
-function forkWords(pull: Pick<InboxPull, 'repo' | 'head_repo'>): string {
+export function forkWords(pull: Pick<InboxPull, 'repo' | 'head_repo'>): string {
   const fork = pull.head_repo;
   return fork && REPO.test(fork) && fork.toLowerCase() !== pull.repo.toLowerCase() ? ` on ${fork} (a fork)` : '';
 }
@@ -260,7 +258,7 @@ function forkWords(pull: Pick<InboxPull, 'repo' | 'head_repo'>): string {
  * compared as `mine` compares logins, exactly. A fork in an organization they own reads as someone else's. Not
  * `inboxReviewIsOf`'s rule, which counts every fork out: a PR from the person's own fork is still theirs to update.
  */
-function branchIsMine(pull: Pick<InboxPull, 'mine' | 'author' | 'repo' | 'head_repo'>): boolean {
+export function branchIsMine(pull: Pick<InboxPull, 'mine' | 'author' | 'repo' | 'head_repo'>): boolean {
   if (!pull.mine) return false;
   const fork = pull.head_repo;
   if (!fork || fork.toLowerCase() === pull.repo.toLowerCase()) return true;
@@ -276,7 +274,8 @@ function branchIsMine(pull: Pick<InboxPull, 'mine' | 'author' | 'repo' | 'head_r
  */
 export function pullHandoffAskLine(stack: InboxPullStack, ask: PullHandoffAsk): string {
   const layers = handoffLayers(stack);
-  const custom = ask.kind === 'custom' ? ask.words.trim().slice(0, PULL_HANDOFF_CUSTOM_MAX) : '';
+  // The person's words, whole (through 0.28.61 they were cut at 1,000 characters without a word).
+  const custom = ask.kind === 'custom' ? ask.words.trim() : '';
   if (layers.length > 1) {
     const top = layers[layers.length - 1]!;
     const from = safeBranch(stack.open_base) ?? "the stack's base branch";
@@ -289,7 +288,7 @@ export function pullHandoffAskLine(stack: InboxPullStack, ask: PullHandoffAsk): 
 }
 
 /** "pull request" / "merge request". */
-const pullNounOf = (stack: Pick<InboxPullStack, 'platform'>) => (stack.platform === 'gitlab' ? 'merge request' : 'pull request');
+export const pullNounOf = (stack: Pick<InboxPullStack, 'platform'>) => (stack.platform === 'gitlab' ? 'merge request' : 'pull request');
 
 /**
  * The opening message of the review thread a PR goes to (Review with an agent, a running one or a new one), the owner's approved
@@ -389,43 +388,51 @@ function stackAuthors(layers: readonly InboxPull[]): string {
   return `- Authors: ${[...by].map(([who, labels]) => `${who} (${labels.join(', ')})`).join(', ')}`;
 }
 
-const possessive = (name: string) => (name.endsWith('s') ? `${name}'` : `${name}'s`);
+/** A PR the person's review was asked for (the owner's words): "Review requested · tomas's PR", or "Review requested" with no author. */
+export const requestedParts = (author: string | null | undefined): Words => (author ? ['Review requested · ', person(author, "'s"), ' PR'] : ['Review requested']);
 
-/** Why a PR is where it is, in words ("Tomas asked for your review"). */
+export const requestedWords = (author: string | null | undefined): string => wordsText(requestedParts(author));
+
+/** Why a PR is where it is, in words ("Review requested · tomas's PR"). */
 export function reasonWords(item: Pick<InboxPullItem, 'reason' | 'focus'>, link: InboxPullLink | null): string {
+  return wordsText(reasonParts(item, link));
+}
+
+/** `reasonWords` in parts: the people it names stay people (`words.ts`). */
+export function reasonParts(item: Pick<InboxPullItem, 'reason' | 'focus'>, link: InboxPullLink | null): Words {
   const pull = item.focus;
   switch (item.reason) {
     case 'requested':
-      return pull.author ? `${pull.author} asked for your review` : 'Your review was asked for';
+      return requestedParts(pull.author);
     case 'assigned':
-      return 'Assigned to you';
+      return ['Assigned to you'];
     case 'agent_ready': {
       // Its review thread (the person's ask, or the agent's own thread that names it); the agent unnamed, only the ask.
       const name = linkAgentName(link);
-      return name ? `${agentThreadWords(name, link?.agent?.ended === true)} · your review` : 'Your review';
+      return [name ? `${agentThreadWords(name, link?.agent?.ended === true)} · your review` : 'Your review'];
     }
     case 'running':
-      return 'Checks running';
+      return ['Checks running'];
     case 'changes':
-      return 'Changes requested';
+      return ['Changes requested'];
     case 'failing':
-      return 'Checks failed';
+      return ['Checks failed'];
     case 'conflicts':
-      return 'Has conflicts';
+      return ['Has conflicts'];
     case 'approved':
-      return `${pull.approved_by ?? 'Approved'}${pull.approved_by ? ' approved' : ''}${pull.checks === 'success' ? ' · checks passed' : ''}`;
+      return [...(pull.approved_by ? [person(pull.approved_by), ' approved'] : ['Approved']), ...(pull.checks === 'success' ? [' · checks passed'] : [])];
     case 'approved_running':
-      return 'Approved · checks running';
+      return ['Approved · checks running'];
     case 'draft':
-      return 'Draft';
+      return ['Draft'];
     case 'review':
-      return pull.reviewers[0] ? `Waiting on ${possessive(pull.reviewers[0])} review` : 'Waiting on review';
+      return pull.reviewers[0] ? ['Waiting on ', person(pull.reviewers[0], possessiveTail(pull.reviewers[0])), ' review'] : ['Waiting on review'];
     case 'others':
-      return pull.author ? `Waiting on ${pull.author}` : 'Waiting on others';
+      return pull.author ? ['Waiting on ', person(pull.author)] : ['Waiting on others'];
     case 'merged':
-      return 'Merged';
+      return ['Merged'];
     case 'closed':
-      return 'Closed';
+      return ['Closed'];
   }
 }
 
@@ -538,6 +545,7 @@ export function pullLaunchAsk(body: string, askLine: string): 'guide' | 'custom'
  * agent's thread: the verdict words, the note, then the comments in the
  * review app's export (`guideCommentSections`), under "Feedback on <noun>".
  * DRAFT agent text (REPORT.md): the words reach the agent as the person's reply.
+ * `skills` (`verdictRecheckBlock`) goes last in the feedback.
  */
 export function pullVerdictReply(
   verdict: 'approved' | 'changes_requested',
@@ -545,6 +553,7 @@ export function pullVerdictReply(
   comments: number,
   sections: string,
   note?: string,
+  skills = '',
 ): { words: string; feedback?: string } {
   const subject = pullSubject(target);
   const count = comments === 1 ? 'a comment' : `${comments} comments`;
@@ -557,10 +566,17 @@ export function pullVerdictReply(
         ? `I reviewed ${subject} and I am asking for changes: ${comments === 1 ? 'my comment is' : `my ${comments} comments are`} below.`
         : `I reviewed ${subject} and I am asking for changes.`;
   const words = [lead, note?.trim() ?? ''].filter((part) => part !== '').join('\n\n');
-  if (comments === 0) return { words };
+  if (comments === 0) return skills ? { words, feedback: skills } : { words };
   const noun = pullNoun(target.pull);
-  return {
-    words,
-    feedback: `# Feedback on ${noun}\n\nThe following comments are on the diff of ${subject}, one section per file. Line numbers are the file's own: (new) the changed file, (old) the original.\n\n${sections}`.trim(),
-  };
+  const feedback = `# Feedback on ${noun}\n\nThe following comments are on the diff of ${subject}, one section per file. Line numbers are the file's own: (new) the changed file, (old) the original.\n\n${sections}`.trim();
+  return { words, feedback: skills ? `${feedback}\n\n${skills}` : feedback };
+}
+
+/**
+ * Whether a PR verdict, which goes to the agent that last wrote in the thread (`link.last`), reaches the live session
+ * that sent the thread's latest review: only that one is asked for just what changed since.
+ */
+export function pullVerdictToReviewer(link: Pick<InboxPullLink, 'agent' | 'guide'> | null): boolean {
+  const reviewer = link?.guide?.review ? link.guide.session : null;
+  return !!reviewer && !!link?.agent && !link.agent.ended && link.agent.session === reviewer;
 }

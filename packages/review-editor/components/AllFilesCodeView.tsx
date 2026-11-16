@@ -9,12 +9,11 @@ import type {
   DiffLineAnnotation,
   FileDiffLoadedFiles,
   FileDiffMetadata,
-  LineAnnotation,
   PostRenderPhase,
   SelectedLineRange,
   VirtualFileMetrics,
 } from '@pierre/diffs';
-import { CodeView, EditProvider, type CodeViewHandle, useStableCallback } from '@pierre/diffs/react';
+import { CodeView, EditProvider, type CodeViewAnnotationArgs, type CodeViewHandle, useStableCallback } from '@pierre/diffs/react';
 import type { DiffTokenEventBaseProps } from '@pierre/diffs';
 import type {
   CodeAnnotation,
@@ -66,6 +65,7 @@ import { GeneratedFileNotice } from './GeneratedFileNotice';
 import { EditSessionHud } from './EditSessionHud';
 import { FileCommentBanner } from './FileCommentBanner';
 import { annotationMatchesPrScope, isFileScopedAnnotation, lineRangeForAnnotation } from '../utils/annotationScope';
+import { openInLineForDiff } from '../utils/openInLine';
 import { useEditSession } from '../edit/useEditSession';
 import type { EditSelectionAnnotationRequest, EditSelectionComment } from '../edit/useEditSession';
 import type { SuggestionHunk } from '../edit/deriveSuggestions';
@@ -81,7 +81,7 @@ import {
   type HostFileNote,
   type HostLineNote,
 } from './hostLineNotes';
-import { detectLanguage } from '../utils/detectLanguage';
+import { applyFileLanguageFixes } from '../utils/highlightLanguage';
 import type { AIChatEntry } from '../hooks/useAIChat';
 import type { ReviewSearchMatch } from '../utils/reviewSearch';
 import {
@@ -89,6 +89,9 @@ import {
   clearItemSearchHighlights,
   swapActiveSearchHighlight,
 } from '../utils/reviewSearchHighlight';
+
+// Pierre picks each file's grammar from its name when the file renders.
+applyFileLanguageFixes();
 
 /** The left panel's file order the all-files surface follows. */
 export type AllFilesOrder = 'tree' | 'kind' | 'list';
@@ -110,7 +113,7 @@ export type AllFilesOrder = 'tree' | 'kind' | 'list';
  *
  *  - CodeView is typed with `<DiffAnnotationMetadata>` so each diff item's
  *    `annotations: DiffLineAnnotation<DiffAnnotationMetadata>[]` and
- *    `renderAnnotation(annotation, item)` are fully typed.
+ *    `renderAnnotation(annotation, fileDiff, item)` are fully typed.
  *  - Annotations are grouped per file (the same projection AllFilesDiffView
  *    builds: side 'additions'/'deletions', lineNumber = ann.lineEnd, metadata =
  *    DiffAnnotationMetadata) and seeded onto each item at build time. When the
@@ -1375,18 +1378,16 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
     return map;
   }, [annotations, prUrl, prDiffScope]);
 
-  // Render a single annotation from item state. `renderAnnotation` receives both
-  // the LineAnnotation and DiffLineAnnotation union — guard `'side' in
+  // Render a single annotation from item state. CodeView calls it as
+  // (annotation, file or fileDiff, item): the owning item is the THIRD argument
+  // (it was the second before @pierre/diffs 1.6). Its method-style prop type is
+  // checked bivariantly, so a two-argument handler still compiles and silently
+  // gets the fileDiff as `item`: keep the tuple type. Guard `'side' in
   // annotation && item.type === 'diff'` (the Diffshub pattern) so file-item
   // annotations (none here) and metadata-less annotations are skipped. Actions
   // route by the OWNING item, not an active-file side channel.
   const renderAnnotation = useStableCallback(
-    (
-      annotation:
-        | DiffLineAnnotation<DiffAnnotationMetadata>
-        | LineAnnotation<DiffAnnotationMetadata>,
-      item: CodeViewItem<DiffAnnotationMetadata>,
-    ) => {
+    (...[annotation, , item]: CodeViewAnnotationArgs<DiffAnnotationMetadata>) => {
       if (!('side' in annotation) || item.type !== 'diff') return null;
       if (!annotation.metadata) return null;
       if (annotation.metadata.kind === 'host-note') {
@@ -1413,7 +1414,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
       return (
         <InlineAnnotation
           metadata={annotation.metadata}
-          language={filePath ? detectLanguage(filePath) : undefined}
+          filePath={filePath}
           isSelected={selectedAnnotationId === annotation.metadata.annotationId}
           onSelect={onSelectAnnotation}
           onEdit={handleEditAnnotation}
@@ -1591,9 +1592,22 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
     }
   });
 
+  const pendingAllCollapsedRef = useRef<boolean | null>(null);
+  useEffect(() => {
+    const pending = pendingAllCollapsedRef.current;
+    if (!workerPoolReady || pending == null) return;
+    pendingAllCollapsedRef.current = null;
+    setAllItemsCollapsed(pending);
+  }, [workerPoolReady, setAllItemsCollapsed]);
+
   const handleToggleAllCollapsed = useStableCallback(() => {
     const handle = viewerRef.current;
-    if (handle == null) return;
+    if (handle == null) {
+      const next = !(pendingAllCollapsedRef.current ?? allCollapsed);
+      pendingAllCollapsedRef.current = next;
+      setAllCollapsed(next);
+      return;
+    }
     // If anything is open, collapse all; otherwise expand all. Computed from
     // live item state so it stays correct after manual per-file toggles.
     const anyExpanded = identity.items.some(
@@ -3397,6 +3411,12 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
         openIn={fileOpenIn?.(filePath)}
         filePath={filePath}
         patch={file.patch}
+        // Read at the click: this file's picked lines (a selection or the
+        // picked comment's, both painted as selectedLines), else its first change.
+        openInLine={() => {
+          const picked = selectedLinesRef.current;
+          return openInLineForDiff(file.patch, picked?.id === item.id ? picked.range : null);
+        }}
         status={file.status}
         oldPath={file.oldPath}
         onEditFile={editEnabled ? () => editSession.startEdit(item.id) : undefined}

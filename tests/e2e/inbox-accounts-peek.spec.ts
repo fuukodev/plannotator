@@ -13,7 +13,7 @@
  * PNGs, light and dark, land in .local/proof/inbox-accounts-step2/.
  */
 
-import { expect, test, type Browser, type BrowserContext, type Page } from '@playwright/test';
+import { expect, test, type Browser, type BrowserContext, type Page } from './inbox-test';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -219,7 +219,8 @@ test('desktop: the row sits above Settings, plain until 90%, and its peek opens 
   await expect(row(page)).toHaveText('Usage');
   await expect(page.locator('[data-usage-figure]')).toHaveCount(0);
   // At the bottom, between Feedback and Settings, not in the top area.
-  const labels = await page.locator('.ib-side-foot > button, .ib-side-foot > .ib-setrow > button.ib-nav').allTextContents();
+  // Each item sits in its sidebar-layout slot (`.ib-side-item`, approval "inbox-sidebar-customize").
+  const labels = await page.locator('.ib-side-foot > button, .ib-side-foot > .ib-side-item > button, .ib-side-foot > .ib-side-item > .ib-setrow > button.ib-nav').allTextContents();
   expect(labels.slice(-3)).toEqual(['Feedback', 'Usage', 'Settings']);
   await expect(page.locator('.ib-side-foot [data-usage-nav]')).toHaveCount(1);
   await shot(page, 'desktop-normal');

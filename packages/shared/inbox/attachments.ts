@@ -30,6 +30,7 @@ import { constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync,
 import { lstat, open, realpath, type FileHandle } from "node:fs/promises";
 import { basename, isAbsolute, join, resolve, sep } from "node:path";
 import { isShapeProjectPath } from "@plannotator/core/shape";
+import { isNetworkPath } from "./network-paths";
 import {
   INBOX_VIEW_MAX_BYTES,
   inboxAttachmentId,
@@ -45,6 +46,7 @@ import {
 import { isLfsPointer, readImageDimensions, sniffImageContentType } from "../review-image";
 import { InboxError } from "./schema";
 import { readMp4VideoMetadata, sniffInboxVideo, type InboxVideoMetadata } from "./video";
+import { audioDurationMsFromHead, inboxAudioServedType, OGG_TAIL_BYTES, oggDurationMs, sniffInboxAudio } from "./audio";
 
 export const BLOBS_DIR = "blobs";
 
@@ -101,13 +103,16 @@ export interface InboxAttachmentKindDecision {
  * read from the bytes: an image by its magic bytes (the extension is
  * ignored, so an HTML page named `.svg` is not an image), a PDF by `%PDF-`,
  * a film by its container (`sniffInboxVideo`, after the image check so an
- * AVIF stays an image), UTF-8 text with no NUL as `code`, and anything else
- * as `file`. A text kind over INBOX_VIEW_MAX_BYTES is a `file` (a download),
- * since the window reads text whole: this is not a limit on what attaches.
+ * AVIF stays an image), a recording by its container (`sniffInboxAudio`,
+ * audio.ts), UTF-8 text with no NUL as `code`, and anything else as `file`.
+ * A text kind over INBOX_VIEW_MAX_BYTES is a `file` (a download), since the
+ * window reads text whole: this is not a limit on what attaches.
  *
  * `video` is what the header walk read from an MP4/MOV (readMp4VideoMetadata):
  * its length and frame size are recorded, and a file whose tracks hold no
- * video (audio named `.mp4`) stays a `file`.
+ * video (audio named `.mp4`) is a recording (`audio`, `audio/mp4`). A
+ * recording's length is the walk's (M4A), the tail's (Ogg) or its head's
+ * (WAV, FLAC, MP3).
  */
 export function decideInboxAttachmentKind(name: string, head: Uint8Array, isText: boolean, size = 0, video?: InboxVideoMetadata | null): InboxAttachmentKindDecision {
   const byName = inboxAttachmentKind(name);
@@ -120,7 +125,8 @@ export function decideInboxAttachmentKind(name: string, head: Uint8Array, isText
   }
   if (isPdfHead(head)) return { kind: "pdf", media_type: "application/pdf" };
   const film = sniffInboxVideo(head);
-  if (film && (!video || video.hasVideoTrack)) {
+  const sound = sniffInboxAudio(head);
+  if (film && !sound && (!video || video.hasVideoTrack)) {
     return {
       kind: "video",
       media_type: film,
@@ -128,14 +134,36 @@ export function decideInboxAttachmentKind(name: string, head: Uint8Array, isText
       ...(film !== "video/webm" && video?.width && video.height ? { width: video.width, height: video.height } : {}),
     };
   }
+  // A recording; or an MP4/MOV whose tracks hold no video (audio named `.mp4`).
+  const recording = sound ?? (film === "video/mp4" || film === "video/quicktime" ? "audio/mp4" : null);
+  if (recording) {
+    const duration = video?.duration_ms ?? audioDurationMsFromHead(head, size, recording);
+    return { kind: "audio", media_type: recording, ...(duration ? { duration_ms: duration } : {}) };
+  }
   if (isText && fitsView) return { kind: "code" };
   return { kind: "file" };
 }
 
-/** An MP4/MOV's header read through a file handle (a few small reads; the film itself is never read). */
+/**
+ * An MP4/MOV's or M4A's header read through a file handle (a few small reads;
+ * the film itself is never read), and an Ogg recording's length from its last
+ * page (one read of the file's tail).
+ */
 export async function readInboxVideoMetadata(handle: FileHandle, size: number, head: Uint8Array): Promise<InboxVideoMetadata | null> {
   const film = sniffInboxVideo(head);
-  if (film !== "video/mp4" && film !== "video/quicktime") return null;
+  const sound = sniffInboxAudio(head);
+  if (sound === "audio/ogg") {
+    try {
+      const at = Math.max(0, size - OGG_TAIL_BYTES);
+      const tail = Buffer.alloc(size - at);
+      const { bytesRead } = await handle.read(tail, 0, tail.length, at);
+      const duration = oggDurationMs(head, tail.subarray(0, bytesRead));
+      return { hasVideoTrack: false, ...(duration ? { duration_ms: duration } : {}) };
+    } catch {
+      return null;
+    }
+  }
+  if (film !== "video/mp4" && film !== "video/quicktime" && sound !== "audio/mp4") return null;
   try {
     return await readMp4VideoMetadata(async (position, length) => {
       const buffer = Buffer.alloc(Math.max(0, Math.min(length, size - position)));
@@ -466,7 +494,7 @@ export async function checkInboxAttachmentForLaunch(inboxDirPath: string, attach
   const check = await checkCurrentAsync(attachment);
   if (!check.ok) return check;
   const kind = readInboxAttachmentKind(attachment.kind);
-  if (kind !== "image" && kind !== "pdf" && kind !== "video") return check;
+  if (kind !== "image" && kind !== "pdf" && kind !== "video" && kind !== "audio") return check;
   const opened = await openInboxAttachmentVersion(inboxDirPath, attachment, "current");
   if (!opened.ok) return { ok: false, unavailable: { code: opened.code, message: opened.message } };
   await opened.handle.close().catch(() => {});
@@ -529,6 +557,76 @@ export async function checkInboxProjectFile(places: readonly InboxProjectFilePla
   return { ok: false, code: refused ? "refused" : "missing" };
 }
 
+export type InboxReadableFile =
+  | { ok: true; path: string; kind: InboxAttachmentKind; size: number; handle?: FileHandle }
+  | { ok: false; code: "missing" | "refused" };
+
+/**
+ * A file a message names, wherever it is on this computer (approval "inbox-file-refs-open-viewer": no project
+ * boundary). Each candidate is an absolute path, tried in order; the first regular file wins.
+ *
+ * - A path that reaches another computer when touched (`isNetworkPath`: UNC, a macOS mount-on-touch folder) is
+ *   refused as written, before anything touches it, and the realpath is never a blocking call.
+ * - A dotenv-family name, or a path `refused` takes (a secret: SSH keys, credential stores), is refused as named and
+ *   again at its realpath, before anything is read, so a symlink to a secret is refused too.
+ * - Once open, the realpath is asked again and must name the same file (`dev` and `ino`): a folder swapped for a link
+ *   between the check and the open is refused. A hard link to a secret has a path of its own and is not told apart.
+ * - `keep`: the open handle comes back with the answer, so the caller reads the very file that was checked (it closes it).
+ *
+ * The kind comes from its name and first bytes, as a send decides it (a text file past the view cap is a `file`).
+ */
+export async function checkInboxReadableFile(
+  candidates: readonly string[],
+  refused: (path: string) => boolean,
+  options: { keep?: boolean; platform?: NodeJS.Platform } = {},
+): Promise<InboxReadableFile> {
+  const platform = options.platform ?? process.platform;
+  let refusedAny = false;
+  for (const named of candidates) {
+    if (!isAbsolute(named) || /[\u0000-\u001f\u007f]/.test(named)) continue;
+    if (isNetworkPath(named, platform) || inboxAttachmentNameRefusal(named) || refused(named)) {
+      refusedAny = true;
+      continue;
+    }
+    let real: string;
+    try {
+      real = await realpath(named);
+    } catch {
+      continue;
+    }
+    if (isNetworkPath(real, platform) || inboxAttachmentNameRefusal(real) || refused(real)) {
+      refusedAny = true;
+      continue;
+    }
+    let handle: FileHandle;
+    try {
+      handle = await open(real, OPEN_FLAGS);
+    } catch {
+      continue;
+    }
+    let kept = false;
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile()) continue;
+      const again = await realpath(real).catch(() => null);
+      const there = again === real ? await lstat(real).catch(() => null) : null;
+      if (!there || there.dev !== stat.dev || there.ino !== stat.ino) {
+        refusedAny = true;
+        continue;
+      }
+      const head = await readHead(handle);
+      const decision = decideInboxAttachmentKind(basename(real), head, isTextHead(head), stat.size);
+      kept = options.keep === true;
+      return { ok: true, path: real, kind: decision.kind, size: stat.size, ...(kept ? { handle } : {}) };
+    } catch {
+      continue;
+    } finally {
+      if (!kept) await handle.close().catch(() => {});
+    }
+  }
+  return { ok: false, code: refusedAny ? "refused" : "missing" };
+}
+
 /** Whether a file's first bytes read as text: no NUL, and UTF-8 (a character cut at the end of the head is fine). */
 function isTextHead(head: Uint8Array): boolean {
   if (head.includes(0)) return false;
@@ -546,6 +644,7 @@ function headMatchesKind(attachment: InboxAttachment, head: Uint8Array): string 
   if (kind === "image" && (isLfsPointer(head) || !sniffImageContentType(head))) return `${attachment.name} is no longer an image.`;
   if (kind === "pdf" && !isPdfHead(head)) return `${attachment.name} is no longer a PDF.`;
   if (kind === "video" && !sniffInboxVideo(head)) return `${attachment.name} is no longer a video.`;
+  if (kind === "audio" && !inboxAudioServedType(head)) return `${attachment.name} is no longer a recording.`;
   return null;
 }
 

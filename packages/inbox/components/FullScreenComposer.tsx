@@ -49,7 +49,10 @@ import type { VoiceLate } from '../voiceSession';
 import { AttachFilesButton, ComposeFileTiles, useFileDrop, type ComposeFile } from '../compose/ComposeFiles';
 import { Icon } from '../icons';
 import { Tip } from './Tip';
+import { ReplyQuoteLine } from './ReplyQuote';
+import type { InboxMessageWire } from '@plannotator/core/inbox-types';
 import { useComposerState, type ComposerMode } from '../fullScreenComposer';
+import { CORNERS, useComposerDrag } from '../composerDrag';
 import { openItemsLabel } from '../openQuestions';
 import { markFullScreenComposer } from '../pageMarks';
 import { cardFootFitCandidates, drawOpenQuestionsForm, fitFootRow, footFitCandidates, openQuestionsFormText, type CardFootFit, type FootFit, type OpenQuestionsLabelForm } from '../footFit';
@@ -108,6 +111,8 @@ export interface FullScreenReply {
   tags?: InboxComposerTags;
   /** The thread's skill rule (skills.ts `inboxSkillFilter`), as the reply box's. */
   skillFilter?: (entry: SkillCatalogEntry) => boolean;
+  /** The message the reply quotes (approval "inbox-reply-quote"), drawn over the words as in the reply box; × drops it. Absent: none. */
+  quote?: { message: InboxMessageWire; words?: string; onRemove: () => void } | null;
 }
 
 export interface FullScreenComposerValue {
@@ -120,6 +125,11 @@ export interface FullScreenComposerValue {
   covered?: boolean;
   /** The card's ⌄: gather every floating tool into the corner control, as » does. Set by the pane. */
   onGather?: () => void;
+  /**
+   * The file on screen (the pane's draft key: the attachment and which version of it shows). Where the person dragged
+   * the card holds for this file only: another key puts it back home (composerDrag.ts). Set by the pane.
+   */
+  fileKey?: string;
 }
 
 /** Given by the pane in full screen (image, film and HTML only): the views draw the composer from it. */
@@ -269,8 +279,8 @@ export function FullScreenComposer({
   onMinimized,
 }: {
   value: FullScreenComposerValue;
-  /** What a comment is on ("this image", "this video", "this page"). */
-  noun: 'image' | 'video' | 'page' | null;
+  /** What a comment is on ("this image", "this video", "this recording", "this page"). */
+  noun: 'image' | 'video' | 'recording' | 'page' | null;
   /** The file's own comment row (its field, Mark up, Comment), drawn as is in the Comment tab. Null: Reply only. */
   comment: ReactNode | null;
   /** The card starts as its pill until the person opens it (an HTML page on a phone). */
@@ -284,28 +294,33 @@ export function FullScreenComposer({
   const state = useComposerState(threadId, hasDraft, takesComments, foldedByDefault);
   const mode = state.mode;
   const cardRef = useRef<HTMLDivElement | null>(null);
+  // The card moves out of the way by its tray, for this file only (composerDrag.ts). A phone's card is docked: no move.
+  const { attach: attachDrag, handle: dragHandle, resizable, narrow, corner } = useComposerDrag(!phone, value.fileKey);
   // `.ib-fcomp` in the page: each `.pn-inbox` above it carries `data-ib-fcomp` (pageMarks.ts).
   const cardRefMarked = useCallback((el: HTMLDivElement | null) => {
     cardRef.current = el;
+    attachDrag(el);
     const release = markFullScreenComposer(el);
     return () => {
       cardRef.current = null;
+      attachDrag(null);
       release?.();
     };
-  }, []);
+  }, [attachDrag]);
   const pillRef = useRef<HTMLButtonElement | null>(null);
   const replyRef = useRef<HTMLTextAreaElement | null>(null);
   const commentsRef = useRef<HTMLButtonElement | null>(null);
   /** The card's height when the list opened: the list sits just above the card. */
   const [cardHeight, setCardHeight] = useState(0);
-  const voice = useVoiceSession(!value.covered && mode === 'reply' && !state.minimized, reply.onLateVoice);
-  // The sheet hides the status and Stop, so no microphone stays open behind it. What was said still lands in the reply.
-  const covered = value.covered === true;
+  const voice = useVoiceSession(!value.covered && !value.tucked && mode === 'reply' && !state.minimized, reply.onLateVoice);
+  // The sheet, or the tools gathered into the corner, hide the status and Stop, so no microphone stays open behind
+  // them. What was said still lands in the reply.
+  const hidden = value.covered === true || value.tucked === true;
   useEffect(() => {
-    if (!covered) return;
+    if (!hidden) return;
     voice.session.stop();
     if (voice.session.view().phase !== 'sending') voice.session.covered();
-  }, [covered, voice.session]);
+  }, [hidden, voice.session]);
   const tabsRef = useRef<HTMLDivElement | null>(null);
   /** Where focus goes once the next state is drawn: the card's field (restored, a tab picked) or the pill (minimized). */
   const focusNext = useRef<'field' | 'pill' | null>(null);
@@ -375,7 +390,7 @@ export function FullScreenComposer({
     if (listAt && !listShown) reply.comments.onList(null);
   });
 
-  const nounText = noun === 'video' ? 'this video' : noun === 'page' ? 'this page' : 'this image';
+  const nounText = noun === 'video' ? 'this video' : noun === 'recording' ? 'this recording' : noun === 'page' ? 'this page' : 'this image';
   const commentLabel = `Comment on ${nounText}`;
   const replyLabel = `Reply to ${reply.to}`;
   const label = mode === 'comment' ? commentLabel : replyLabel;
@@ -443,7 +458,8 @@ export function FullScreenComposer({
       <path d="M11 0V10H0V9.5A10.5 9.5 0 0 0 10.5 0Z" />
     </svg>
   );
-  const tab = (which: ComposerMode, icon: 'comment' | 'reply', text: string, words: boolean) => {
+  // `short`: what the tab reads on a card the person made narrow (composerDrag.ts), as a phone's. Its name stays whole.
+  const tab = (which: ComposerMode, icon: 'comment' | 'reply', text: string, words: boolean, short?: string) => {
     const on = mode === which;
     return (
       <button
@@ -455,12 +471,12 @@ export function FullScreenComposer({
         onClick={() => pick(which)}
         onKeyDown={onTabKey}
         data-fcomp-mode={which}
-        title={!on && words ? `${text} (has words)` : undefined}
+        title={!on && words ? `${text} (has words)` : narrow && short ? text : undefined}
       >
         {on && flare('l')}
         {on && flare('r')}
         <Icon name={icon} size={phone ? 16 : 13} />
-        <span className="ib-fcomp-tabl">{text}</span>
+        <span className="ib-fcomp-tabl" data-short={short}>{text}</span>
         {!on && words && <span className="ib-fcomp-tabdot" aria-hidden="true" data-fcomp-tab-dot="" />}
         {!on && words && <span className="ib-sr">, has words</span>}
       </button>
@@ -585,11 +601,11 @@ export function FullScreenComposer({
         reply.onSend();
       }}
     >
-      <div className="ib-fcomp-top">
+      <div className="ib-fcomp-top" {...dragHandle}>
         {takesComments ? (
           <div className="ib-fcomp-tabs" role="radiogroup" aria-label="Write" ref={tabsRef}>
-            {tab('comment', 'comment', phone ? 'Comment' : commentLabel, commentWords)}
-            {tab('reply', 'reply', phone ? 'Reply' : replyLabel, hasDraft)}
+            {tab('comment', 'comment', phone ? 'Comment' : commentLabel, commentWords, phone ? undefined : 'Comment')}
+            {tab('reply', 'reply', phone ? 'Reply' : replyLabel, hasDraft, phone ? undefined : 'Reply')}
           </div>
         ) : (
           <span className="ib-fcomp-solo">
@@ -602,6 +618,8 @@ export function FullScreenComposer({
             type="button"
             className="ib-fvb ib-fcomp-min"
             onClick={() => {
+              // Before the card goes: a take still recording is transcribed into the reply, never dropped with its field.
+              voice.session.stop();
               onMinimized?.();
               // The same gather as the toolbar's »: everything goes into the corner control, and comes back with it.
               if (value.onGather) return value.onGather();
@@ -627,6 +645,11 @@ export function FullScreenComposer({
             }}
             onPutBack={(key) => reply.onPutBack(key, replyRef.current)}
           />
+        </div>
+      )}
+      {mode === 'reply' && reply.quote && (
+        <div className="ib-fcomp-quote" data-fcomp-quote="">
+          <ReplyQuoteLine message={reply.quote.message} words={reply.quote.words} phone={phone} onRemove={reply.quote.onRemove} />
         </div>
       )}
       <div className="ib-fcomp-body" data-fcomp-body="">
@@ -683,6 +706,8 @@ export function FullScreenComposer({
           {reply.errorActions}
         </p>
       )}
+      {/* Off its home, the card's corners resize it (composerDrag.ts). No mark at rest: the cursor, and a faint arc under the pointer. Pointer only. */}
+      {resizable && CORNERS.map((which) => <span key={which} className="ib-fcomp-corner" aria-hidden="true" {...corner(which)} />)}
       {drop.over && (
         <div className="ib-rdrop ib-fcomp-drop" aria-hidden="true" data-fcomp-drop="">
           <Icon name="clip" size={18} />

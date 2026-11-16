@@ -22,13 +22,14 @@
  * .local/proof/sound/).
  */
 
-import { expect, test, type Browser, type BrowserContext, type Page } from '@playwright/test';
+import { expect, test, type Browser, type BrowserContext, type Page } from './inbox-test';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { SimAgent, scratchProject } from '../../scripts/inbox-sim';
 import { E2E_LAUNCH_OFF, inboxScratch, launchOff, removeInboxScratch } from './inbox-scratch';
+import { savedConfig } from '../helpers/saved-config';
 
 const repo = resolve(__dirname, '../..');
 const shots = resolve(process.env.PLANNOTATOR_SOUND_SHOTS ?? join(resolve(process.env.PLANNOTATOR_E2E_PROOF_DIR ?? join(repo, '.local/proof')), 'sound'));
@@ -124,13 +125,15 @@ async function newWorld(browser: Browser, options: { updatedFrom?: string } = {}
   // An Inbox that ran before on an older version: this run is an update.
   if (options.updatedFrom) {
     writeFileSync(join(dataDir, 'update-state.json'), JSON.stringify({ inboxVersion: options.updatedFrom }));
-    // Due on a used Inbox, and its check would run the `codex` on this PATH.
-    writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ...E2E_LAUNCH_OFF, inboxVoiceIntro: { shownAt: '2026-10-01T10:00:00.000Z' } }));
+    // Due on a used Inbox, and its check would run the `codex` on this PATH. Rows ("Choose how your list looks") is
+    // ahead of the sound in the line since 2026-11-10: settled here, so the sound is what this world has next.
+    writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ ...E2E_LAUNCH_OFF, inboxVoiceIntro: { shownAt: '2026-10-01T10:00:00.000Z' }, inboxListIntro: { shownAt: '2026-10-01T10:00:00.000Z', version: 2 }, favicon: 'glass', inboxThemeChooser: { notNeededAt: '2026-10-01T10:00:00.000Z' } }));
   }
   const env = {
     PATH: `${trapDir}:${process.env.PATH ?? ''}`,
     HOME: home,
     TMPDIR: tmpdir(),
+    PLANNOTATOR_RELAY_URL: 'http://127.0.0.1:9',
     PLANNOTATOR_DATA_DIR: dataDir,
     // A release version: never the live daily ping (packages/shared/daily-ping.ts).
     NO_ANON_PING: '1',
@@ -170,10 +173,8 @@ async function agent(world: World, name = 'Claude Code', host = 'claude-code'): 
   return sim;
 }
 
-function config(world: World): { inboxSound?: Record<string, unknown> } {
-  const path = join(world.dataDir, 'config.json');
-  return existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : {};
-}
+/** config.json with state.json, where the dialog's marks live (#2852). */
+const config = (world: World): { inboxSound?: Record<string, unknown> } => savedConfig(world.dataDir);
 
 const rings = (page: Page) => page.evaluate(() => window.__sound.oscillators / 4);
 

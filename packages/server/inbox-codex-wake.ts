@@ -43,6 +43,19 @@
  *    for the next look (any person's item, a Codex thread's next message, a
  *    thread coming back, an Inbox restart).
  *
+ * A thread T3 Code runs (its rollout's originator) is never queued: T3 runs a
+ * turn Codex starts by itself out of the person's sight. Its items go into
+ * the T3 thread through T3's own `t3` command (packages/server/inbox-t3-local.ts).
+ * While T3 is closed they wait (`t3_wait`), and go in within seconds of T3
+ * starting again; a send T3 may have taken (the command ran out of time) is
+ * never sent again.
+ *
+ * A session the Inbox launched (packages/server/inbox-launch-codex.ts) is
+ * asked first (`deliver`): its host puts the text in as a turn over the
+ * `codex app-server` the Inbox runs for it, and it is delivered at once. That
+ * needs no `codex queue`, so it never waits for a Codex CLI that queues; only
+ * `queue` from the host sends an item the CLI's way.
+ *
  * The text goes to `codex queue` as an argument, so while the call runs (a
  * few hundred milliseconds) it can be read in the process list (`ps`) by
  * other processes of this user and, on a shared machine, by anyone who can
@@ -55,6 +68,7 @@
  * mid-turn.
  */
 
+import { INBOX_ROWS_ASK_CLOSE, INBOX_ROWS_ASK_OPEN } from "@plannotator/core/inbox-types";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { lstat, open, readdir, type FileHandle } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
@@ -63,6 +77,8 @@ import { INBOX_TOOL_NAME, inboxWakeCommand, inboxWakeText, type InboxReplyComman
 import { INBOX_BOARD_REQUEST_CLOSE, INBOX_BOARD_REQUEST_OPEN, INBOX_DECISION_ASK_CLOSE, INBOX_DECISION_ASK_OPEN } from "@plannotator/core/inbox-types";
 import type { InboxStore } from "@plannotator/shared/inbox/store";
 import { agentHomeAllowed, codexHome, type AgentEnvironment } from "./inbox-agents";
+import type { LaunchDelivery } from "./inbox-launch-host";
+import { createT3Claims, INBOX_T3_READ_BACK_AFTER_MS, type T3Local, type T3Route, tryThroughT3 } from "./inbox-t3-local";
 
 /** The ChatGPT desktop app's own Codex CLI (macOS), used when no `codex` is on PATH. */
 export const INBOX_CODEX_DESKTOP_CLI = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex";
@@ -112,6 +128,8 @@ export interface InboxCodexWake {
    * and not one Codex disowned that no queue or turn has proved since.
    */
   wakes(host: unknown, session: unknown, meta: unknown): Promise<boolean>;
+  /** Whether T3 Code runs the thread (its rollout's originator): this wake never queues for it. */
+  ownedByT3(session: string): Promise<boolean>;
   /**
    * How a session stands for the presence rules: `alive` (a Codex session the
    * Inbox wakes), `dead` (Codex did not know its thread), null (not a Codex
@@ -199,8 +217,24 @@ async function firstLineOf(path: string, max: number): Promise<string | null> {
   }
 }
 
-/** What one rollout's first line says of `thread`: true (keeps running), false (exec, a subagent…), null (not its session_meta). */
-function sessionMetaKeepsRunning(line: string | null, thread: string): boolean | null {
+/**
+ * T3 Code's originator for the `codex app-server` it runs (T3 sets
+ * `CODEX_INTERNAL_ORIGINATOR_OVERRIDE`: "T3 Code"; older builds "t3code_desktop").
+ * T3 runs a turn it did not start on such a thread out of sight, so `codex
+ * queue` must never reach it.
+ */
+const T3_ORIGINATOR = /^t3[ _-]?code\b|^t3code_/i;
+
+/** What a thread's rollout says of it. */
+export interface CodexRolloutSaid {
+  /** It keeps running after its turn (the TUI, the apps), so a queued message becomes a turn. */
+  keepsRunning: boolean;
+  /** T3 Code runs it (its originator). */
+  t3: boolean;
+}
+
+/** What one rollout's first line says of `thread`; null when it is not its session_meta. */
+function sessionMetaSays(line: string | null, thread: string): CodexRolloutSaid | null {
   if (!line) return null;
   let record: unknown;
   try {
@@ -210,7 +244,10 @@ function sessionMetaKeepsRunning(line: string | null, thread: string): boolean |
   }
   const { type, payload } = (record ?? {}) as { type?: unknown; payload?: { id?: unknown; source?: unknown; originator?: unknown } };
   if (type !== "session_meta" || !payload || typeof payload.id !== "string" || payload.id.toLowerCase() !== thread.toLowerCase()) return null;
-  return typeof payload.source === "string" && KEEPS_RUNNING_SOURCES.has(payload.source) && payload.originator !== EXEC_ORIGINATOR;
+  return {
+    keepsRunning: typeof payload.source === "string" && KEEPS_RUNNING_SOURCES.has(payload.source) && payload.originator !== EXEC_ORIGINATOR,
+    t3: typeof payload.originator === "string" && T3_ORIGINATOR.test(payload.originator),
+  };
 }
 
 const DAY_MS = 24 * 60 * 60_000;
@@ -245,6 +282,11 @@ export function codexRolloutDayFolders(thread: string): string[] {
  * metadata to tell a typed turn from `codex exec`.
  */
 export async function codexRolloutKeepsRunning(codexHomeDir: string, thread: string): Promise<boolean | null> {
+  return (await codexRolloutSays(codexHomeDir, thread))?.keepsRunning ?? null;
+}
+
+/** What a thread's rollout says of it (`codexRolloutKeepsRunning`'s look), null when no rollout of it is found. */
+export async function codexRolloutSays(codexHomeDir: string, thread: string): Promise<CodexRolloutSaid | null> {
   if (!isCodexThreadId(thread)) return null;
   const sessions = join(codexHomeDir, "sessions");
   const newestFirst = async (dir: string): Promise<string[]> => {
@@ -255,10 +297,10 @@ export async function codexRolloutKeepsRunning(codexHomeDir: string, thread: str
     }
   };
   const suffix = `-${thread.toLowerCase()}.jsonl`;
-  const inFolder = async (folder: string): Promise<boolean | null> => {
+  const inFolder = async (folder: string): Promise<CodexRolloutSaid | null> => {
     for (const file of await newestFirst(join(sessions, folder))) {
       if (!file.startsWith("rollout-") || !file.toLowerCase().endsWith(suffix)) continue;
-      const answer = sessionMetaKeepsRunning(await firstLineOf(join(sessions, folder, file), SESSION_META_MAX_BYTES), thread);
+      const answer = sessionMetaSays(await firstLineOf(join(sessions, folder, file), SESSION_META_MAX_BYTES), thread);
       if (answer !== null) return answer;
     }
     return null;
@@ -305,7 +347,7 @@ export function codexQueueMessage(command: InboxReplyCommand): string {
   if (Buffer.byteLength(full) <= INBOX_CODEX_MESSAGE_MAX_BYTES) return full;
   // The Board request (compose's chip) or a Decision data Ask's instructions end the body: only the words before them
   // are cut, and they stay whole after the note.
-  const closing = whole.endsWith(INBOX_DECISION_ASK_CLOSE) ? INBOX_DECISION_ASK_OPEN : whole.endsWith(INBOX_BOARD_REQUEST_CLOSE) ? INBOX_BOARD_REQUEST_OPEN : null;
+  const closing = whole.endsWith(INBOX_ROWS_ASK_CLOSE) ? INBOX_ROWS_ASK_OPEN : whole.endsWith(INBOX_DECISION_ASK_CLOSE) ? INBOX_DECISION_ASK_OPEN : whole.endsWith(INBOX_BOARD_REQUEST_CLOSE) ? INBOX_BOARD_REQUEST_OPEN : null;
   const at = closing ? whole.lastIndexOf(`\n\n${closing}\n`) : -1;
   const tail = at >= 0 ? whole.slice(at) : "";
   const body = tail ? whole.slice(0, at) : whole;
@@ -328,14 +370,22 @@ export function createInboxCodexWake(options: {
   environment: AgentEnvironment;
   /** The wake command for an item and the session it goes to (the bridge's `replyCommand`). */
   commandOf: (item: InboxMessage, session: string) => InboxReplyCommand;
+  /** A launched session's host, asked before `codex queue` (the launch engine's `deliver`): `queue` lets the CLI carry it. */
+  deliver?: (session: string, text: string) => Promise<LaunchDelivery>;
+  /** Whether a launch of this Inbox owns the session (its host can take an item with no Codex CLI that queues). */
+  launched?: (session: string) => boolean;
   /** An item not to hand at all (a steps-only Tidy wake once steps are off: the server withdraws it). */
   skip?: (item: InboxMessage, session: string) => boolean;
+  /** A thread T3 Code runs: how its items go into the T3 thread (inbox-t3-local.ts). Without it they wait in the Inbox. */
+  t3?: T3Local;
   /** Where to look for a Codex CLI besides PATH. Default: the ChatGPT and Codex apps' own (macOS), never under the test sandbox. */
   extraClis?: readonly string[];
   now?: () => number;
   /** How long one `codex queue` may take. Default INBOX_CODEX_QUEUE_TIMEOUT_MS; tests shorten it. */
   queueTimeoutMs?: number;
   log?: (line: string) => void;
+  /** Each reply that went into a T3 thread, and each that starts to wait on T3 (the debug log's `t3_route` line). */
+  route?: (route: T3Route) => void;
 }): InboxCodexWake {
   const { store, environment } = options;
   const now = options.now ?? Date.now;
@@ -374,35 +424,43 @@ export function createInboxCodexWake(options: {
   const knownSessions = (): Set<string> => (known ??= store.wakingSessionsOfHost(INBOX_CODEX_HOST));
   let woke: Set<string> | null = null;
   const wokeSessions = (): Set<string> => (woke ??= store.sessionsThatWoke(INBOX_CODEX_HOST));
-  /** What each thread's rollout said (`codexRolloutKeepsRunning`), once it said it: a thread's source never changes. */
-  const rolloutSaid = new Map<string, boolean>();
-  /** When a thread's rollout was last not found (ms): not looked for again for ROLLOUT_MISS_TTL_MS. */
+  /** What each thread's rollout said (`codexRolloutSays`), once it said it: a thread's source and originator never change. */
+  const rolloutSaid = new Map<string, CodexRolloutSaid>();
+  /**
+   * When a thread's rollout was last not found (ms): not looked for again for ROLLOUT_MISS_TTL_MS. The T3 check
+   * keeps its own, so a look it made never stops a shell call's look.
+   */
   const rolloutMissed = new Map<string, number>();
+  const t3Missed = new Map<string, number>();
   /** A look running now, per thread: concurrent sends share it. */
-  const rolloutLooks = new Map<string, Promise<boolean>>();
-  const rolloutKeepsRunning = (session: string): Promise<boolean> => {
+  const rolloutLooks = new Map<string, Promise<CodexRolloutSaid | null>>();
+  const rolloutOf = (session: string, misses = rolloutMissed): Promise<CodexRolloutSaid | null> => {
     const said = rolloutSaid.get(session);
     if (said !== undefined) return Promise.resolve(said);
-    const missed = rolloutMissed.get(session);
-    if (missed !== undefined && now() - missed < ROLLOUT_MISS_TTL_MS) return Promise.resolve(false);
+    const missed = misses.get(session);
+    if (missed !== undefined && now() - missed < ROLLOUT_MISS_TTL_MS) return Promise.resolve(null);
     // A test run reads agent files only in a scratch home (never the person's real ~/.codex).
-    if (!agentHomeAllowed(environment)) return Promise.resolve(false);
+    if (!agentHomeAllowed(environment)) return Promise.resolve(null);
     const running = rolloutLooks.get(session);
     if (running) return running;
-    const look = codexRolloutKeepsRunning(codexHome(environment), session)
+    const look = codexRolloutSays(codexHome(environment), session)
       .catch(() => null)
       .then((answer) => {
-        if (answer === null) rolloutMissed.set(session, now());
+        if (answer === null) misses.set(session, now());
         else {
           rolloutMissed.delete(session);
+          t3Missed.delete(session);
           rolloutSaid.set(session, answer);
         }
-        return answer === true;
+        return answer;
       })
       .finally(() => rolloutLooks.delete(session));
     rolloutLooks.set(session, look);
     return look;
   };
+  const rolloutKeepsRunning = async (session: string): Promise<boolean> => (await rolloutOf(session))?.keepsRunning === true;
+  /** A thread T3 Code runs: never queued (T3 would run the turn out of sight); its items go to the T3 thread. */
+  const ownedByT3 = async (session: string): Promise<boolean> => (await rolloutOf(session, t3Missed))?.t3 === true;
   /** Threads only a shell call took off `dead`: that call says nothing of Codex knowing them again, until a queue or a turn does. */
   const unproven = new Set<string>();
   const dead = new Set<string>();
@@ -435,8 +493,8 @@ export function createInboxCodexWake(options: {
       if (!isCodexThreadId(session)) continue;
       claimed.add(name);
       try {
-        const record = JSON.parse(readFileSync(join(dir, name, "queued.json"), "utf8")) as { at?: unknown; timed_out?: unknown };
-        if (typeof record.at === "number" && record.timed_out !== true) (queued.get(session) ?? queued.set(session, new Map()).get(session)!).set(itemId, record.at);
+        const record = JSON.parse(readFileSync(join(dir, name, "queued.json"), "utf8")) as { at?: unknown; timed_out?: unknown; uncertain?: unknown };
+        if (typeof record.at === "number" && record.timed_out !== true && record.uncertain !== true) (queued.get(session) ?? queued.set(session, new Map()).get(session)!).set(itemId, record.at);
         else uncertain.add(name);
       } catch {
         // Claimed and never finished (the Inbox stopped mid-call): never queued again, and not known to have gone.
@@ -447,6 +505,7 @@ export function createInboxCodexWake(options: {
     // No claims yet.
   }
   const dropClaim = (itemId: string, session: string) => {
+    store.handover.giveBack(itemId, session);
     claimed.delete(`${itemId}.${session}`);
     uncertain.delete(`${itemId}.${session}`);
     queued.get(session)?.delete(itemId);
@@ -485,11 +544,13 @@ export function createInboxCodexWake(options: {
     (retryTimer as { unref?: () => void }).unref?.();
   };
 
-  const queueOne = async (path: string, item: InboxMessage, session: string): Promise<void> => {
+  /** `path`: a Codex CLI that queues, or null when none was found (then only a launched session's host can take it). */
+  const queueOne = async (path: string | null, item: InboxMessage, session: string): Promise<void> => {
     const id = store.deliveryIdOf(item, session);
     const key = `${id}.${session}`;
     const retry = retryAt.get(key);
     if (retry && retry.at > now()) return;
+    if (id === item.id && !store.handover.hand(item, session, "codex")) return;
     try {
       mkdirSync(dir, { recursive: true });
       mkdirSync(claimDir(id, session));
@@ -504,6 +565,45 @@ export function createInboxCodexWake(options: {
     // An idle thread starts its turn while `codex queue` still runs; that turn's tool call is kept until the call exits 0.
     const flight = { at, session, itemId: id, taken: false };
     inFlight.set(key, flight);
+    // A launched session: its host puts it in as a turn now (delivered), or leaves it to `codex queue`.
+    const own = options.deliver ? await options.deliver(session, text).catch((error: unknown) => ({ failed: error instanceof Error ? error.message : String(error) })) : "queue";
+    if (own === "delivered") {
+      inFlight.delete(key);
+      retryAt.delete(key);
+      delivered(id, session);
+      return;
+    }
+    if (own === "hold") {
+      // Not now, and never `codex queue`: it waits in the Inbox, looked at again when the next line lands.
+      inFlight.delete(key);
+      retryAt.delete(key);
+      dropClaim(id, session);
+      return;
+    }
+    if (typeof own === "object" && "uncertain" in own) {
+      // Sent, and no answer: the turn may have started. Kept claimed and uncertain, never sent again (as a timed-out `codex queue`).
+      inFlight.delete(key);
+      retryAt.delete(key);
+      log(`the Codex launch may have delivered ${item.id} to ${session} (${own.uncertain}); it is not sent again: the agent sees it when it reads the thread.`);
+      if (!claimed.has(key)) return;
+      uncertain.add(key);
+      writeFileSync(join(claimDir(id, session), "queued.json"), `${JSON.stringify({ at, timed_out: true })}\n`);
+      return;
+    }
+    if (own !== "queue") {
+      inFlight.delete(key);
+      dropClaim(id, session);
+      const wait = Math.min((retry?.wait ?? RETRY_FIRST_MS / 2) * 2, RETRY_MAX_MS);
+      retryAt.set(key, { at: now() + wait, wait });
+      log(`the Codex launch could not deliver ${item.id} to ${session}: ${own.failed}. Trying again later.`);
+      return;
+    }
+    if (path === null) {
+      // No Codex CLI that queues: the item waits for the next look.
+      inFlight.delete(key);
+      dropClaim(id, session);
+      return;
+    }
     // `--name=value`: a value that starts with "-" would be read as a flag.
     const run = await environment.run([path, "queue", `--thread=${session}`, `--message=${text}`], { timeoutMs: options.queueTimeoutMs ?? INBOX_CODEX_QUEUE_TIMEOUT_MS, signal: stopping.signal });
     inFlight.delete(key);
@@ -555,6 +655,133 @@ export function createInboxCodexWake(options: {
     }
   };
 
+  /**
+   * An item for a thread T3 Code runs goes into the T3 thread (`options.t3`, `tryThroughT3`), never `codex queue`.
+   * Only a closed T3 here says so on the reply (`t3_wait: "closed"`); one it cannot reach otherwise (no T3 command
+   * here, no T3 thread found yet) is saved for the agent's next read, and the lookup is tried again. Whether it
+   * went: true when it did (the next item of the thread may follow).
+   */
+  /** Whether a sweep waits on T3 starting again (`T3Local.onceRunning`). */
+  let t3Awaited = false;
+  // An item id has no dot, nor has a Codex thread id.
+  const itemOfKey = (key: string) => key.slice(0, key.indexOf("."));
+  const sessionOfKey = (key: string) => key.slice(key.indexOf(".") + 1);
+  const t3Claims = createT3Claims(join(store.dir, "t3-send-codex"), now);
+  /** Items saved for the agent's next read while T3 cannot be reached here, or while a send that may have gone is read back. */
+  const t3Saved = new Set<string>();
+  const sendToT3 = async (item: InboxMessage, session: string): Promise<boolean> => {
+    const id = store.deliveryIdOf(item, session);
+    const key = `${id}.${session}`;
+    const routed = (route: T3Route["route"], reason?: string) =>
+      options.route?.({ route, agent: "codex", thread: item.thread_id, reply: item.id, ...(reason ? { reason } : {}) });
+    const waits = (reason: "closed" | null) => {
+      if (id !== item.id || !store.isOwner(item, session)) return;
+      if (reason && store.message(item.id)?.t3_wait !== reason) routed("waiting", reason);
+      try {
+        store.recordT3Wait(item.id, reason);
+      } catch {
+        // Gone meanwhile.
+      }
+    };
+    const sayOnce = (line: string) => {
+      if (failuresSaid.has(line)) return;
+      failuresSaid.add(line);
+      log(line);
+    };
+    const awaitT3 = () => {
+      if (t3Awaited || !options.t3) return;
+      t3Awaited = true;
+      options.t3.onceRunning(() => {
+        t3Awaited = false;
+        // Back: what waited on a retry goes now too.
+        for (const one of [...retryAt.keys()]) if (t3Saved.has(one) || t3Claims.has(itemOfKey(one), sessionOfKey(one))) retryAt.delete(one);
+        void sweep();
+      });
+    };
+    const t3 = options.t3;
+    if (!t3?.installed()) {
+      // No T3 command here (none installed, Windows): nothing here can put it in. Saved, never "Open T3".
+      waits(null);
+      t3Saved.add(key);
+      sayOnce(`T3 Code runs Codex thread ${session}, and this machine has no t3 command the Inbox can use; its replies are saved for the agent's next read.`);
+      return false;
+    }
+    const held = t3Claims.has(id, session);
+    if (!t3.running()) {
+      // T3 is closed: nothing to try until it runs again, looked for every few seconds.
+      retryAt.delete(key);
+      if (held) t3Saved.add(key);
+      else waits("closed");
+      awaitT3();
+      return false;
+    }
+    const retry = retryAt.get(key);
+    if (retry && retry.at > now()) return false;
+    const later = (first: number, line: string | null) => {
+      const wait = Math.min(Math.max((retry?.wait ?? first / 2) * 2, first), RETRY_MAX_MS);
+      retryAt.set(key, { at: now() + wait, wait });
+      if (line) sayOnce(`${line}. Trying again later.`);
+    };
+    const thread = await t3.threadOfCodexThread(session);
+    if (!thread) {
+      // T3 runs, and its state names no thread for this one yet (it may in a moment): saved, and looked up again soon.
+      waits(null);
+      t3Saved.add(key);
+      later(INBOX_T3_READ_BACK_AFTER_MS, `T3 Code runs Codex thread ${session}, and its T3 thread could not be found`);
+      return false;
+    }
+    if (!held && id === item.id && !store.handover.hand(item, session, "t3")) return false;
+    const command = options.commandOf(item, session);
+    const tried = await tryThroughT3({ local: t3, claims: t3Claims, itemId: id, session, t3Thread: thread, marker: command.id, text: codexQueueMessage(command), now, signal: stopping.signal, log });
+    if (tried === "delivered") {
+      t3Claims.drop(id, session);
+      t3Saved.delete(key);
+      retryAt.delete(key);
+      waits(null);
+      delivered(id, session);
+      routed("t3_send");
+      return true;
+    }
+    if (tried === "checking") {
+      // It may have gone: kept, saved in the window, and the T3 thread read back on the next try.
+      t3Saved.add(key);
+      waits(null);
+      later(INBOX_T3_READ_BACK_AFTER_MS, null);
+      if (!t3.running()) awaitT3();
+      return false;
+    }
+    t3Saved.delete(key);
+    store.handover.giveBack(id, session);
+    if (tried === "gone") {
+      retryAt.delete(key);
+      waits(null);
+      dead.add(session);
+      log(`T3 no longer has thread ${thread}; the reply waits in the Inbox for the next agent.`);
+      return false;
+    }
+    if (tried === "closed") {
+      waits("closed");
+      awaitT3();
+      return false;
+    }
+    waits(null);
+    later(RETRY_FIRST_MS, `T3 did not take ${item.id} for thread ${thread}`);
+    return false;
+  };
+  /** What `codex queue` took for a thread T3 runs (before the Inbox knew) no turn T3 shows will take: saved, not handed. */
+  const releaseQueued = (session: string) => {
+    for (const itemId of [...(queued.get(session)?.keys() ?? [])]) {
+      queued.get(session)?.delete(itemId);
+      store.handover.giveBack(itemId, session);
+      uncertain.add(`${itemId}.${session}`);
+      try {
+        writeFileSync(join(claimDir(itemId, session), "queued.json"), `${JSON.stringify({ at: now(), uncertain: true })}\n`);
+      } catch {
+        // Kept in memory.
+      }
+    }
+  };
+
   let sweeping: Promise<void> | null = null;
   let again = false;
   const sweepOnce = async (): Promise<void> => {
@@ -563,8 +790,10 @@ export function createInboxCodexWake(options: {
     // One pass over the messages, bucketed by recipient (dead sessions included, for their claims).
     const pending = store.pendingRepliesFor(sessions, { tags: true });
     const pendingKeys = new Set<string>();
-    const work: { item: InboxMessage; session: string }[] = [];
+    let work: { item: InboxMessage; session: string }[] = [];
     for (const [session, items] of pending) {
+      // Only a Codex thread id is ever handed on: never a launch's placeholder (`launch:<id>`) before its thread exists.
+      if (!isCodexThreadId(session)) continue;
       for (const item of items) {
         if (!wakesItem(item, session) || options.skip?.(item, session)) continue;
         const key = `${store.deliveryIdOf(item, session)}.${session}`;
@@ -580,12 +809,32 @@ export function createInboxCodexWake(options: {
       dropClaim(key.slice(0, dot), key.slice(dot + 1));
     }
     for (const key of [...retryAt.keys()]) if (!pendingKeys.has(key)) retryAt.delete(key);
+    for (const key of [...t3Saved]) if (!pendingKeys.has(key)) t3Saved.delete(key);
+    for (const key of t3Claims.keys()) if (!pendingKeys.has(key)) t3Claims.drop(itemOfKey(key), sessionOfKey(key));
+    // A thread T3 Code runs goes into its T3 thread: T3 runs a turn it did not start out of sight.
+    const t3Owned = new Set<string>();
+    for (const session of new Set([...work.map((one) => one.session), ...queued.keys()])) {
+      if (options.launched?.(session) !== true && (await ownedByT3(session))) t3Owned.add(session);
+    }
+    for (const session of t3Owned) releaseQueued(session);
+    if (t3Owned.size > 0) {
+      // In order: once an item of a thread does not go, the thread's later ones wait for it.
+      const waiting = new Set<string>();
+      for (const { item, session } of work) {
+        if (stopping.signal.aborted) return;
+        if (!t3Owned.has(session) || waiting.has(session)) continue;
+        if (!(await sendToT3(item, session))) waiting.add(session);
+      }
+      work = work.filter((one) => !t3Owned.has(one.session));
+    }
     if (work.length > 0) {
+      // A launched session's host needs no CLI that queues; without one, only those items can go.
       const found = await cli();
-      if (found) {
-        for (const { item, session } of work) {
+      const sendable = found ? work : options.deliver ? work.filter((one) => options.launched?.(one.session) === true) : [];
+      if (sendable.length > 0) {
+        for (const { item, session } of sendable) {
           if (stopping.signal.aborted) return;
-          await queueOne(found.path, item, session);
+          await queueOne(found?.path ?? null, item, session);
         }
       }
     }
@@ -660,16 +909,20 @@ export function createInboxCodexWake(options: {
     knownCli: () => cliAnswer?.cli ?? null,
     wakes: async (host, session, meta) => {
       if (host !== INBOX_CODEX_HOST || !isCodexThreadId(session)) return false;
-      if (codexCallWakes(meta, session)) return (await cli()) !== null;
+      // A thread T3 Code runs wakes through its T3 thread, never `codex queue`.
+      const throughT3 = async () => options.t3?.installed() === true && (await options.t3.threadOfCodexThread(session)) !== null;
+      if (codexCallWakes(meta, session)) return (await ownedByT3(session)) ? throughT3() : (await cli()) !== null;
       // A command its shell runs (`plannotator inbox call`): a thread that woke before, or one its rollout says keeps running.
       if (codexThreadOfCall(meta) !== null || dead.has(session) || unproven.has(session)) return false;
+      if (await ownedByT3(session)) return throughT3();
       if (wokeSessions().has(session)) return (await cli()) !== null;
       // The rollout is read only when a Codex CLI could queue for it.
       return (await cli()) !== null && (await rolloutKeepsRunning(session));
     },
     status: (session) => (!knownSessions().has(session) ? null : dead.has(session) ? "dead" : "alive"),
-    uncertain: (session, itemId) => uncertain.has(`${itemId}.${session}`),
-    uncertainItems: (session) => [...uncertain].filter((key) => key.endsWith(`.${session}`)).map((key) => key.slice(0, key.indexOf("."))),
+    ownedByT3,
+    uncertain: (session, itemId) => uncertain.has(`${itemId}.${session}`) || t3Saved.has(`${itemId}.${session}`),
+    uncertainItems: (session) => [...new Set([...uncertain, ...t3Saved])].filter((key) => key.endsWith(`.${session}`)).map((key) => key.slice(0, key.indexOf("."))),
     noteToolCall,
     sweep,
     stop: () => {

@@ -21,7 +21,7 @@
  */
 import { writeInboxAsk } from '../../packages/shared/inbox/ask';
 import { startScriptedAskAgent, type ScriptedAskAgent } from '../helpers/inbox-ask-agent';
-import { expect, test, type Browser, type BrowserContext, type Locator, type Page } from '@playwright/test';
+import { expect, test, type Browser, type BrowserContext, type Locator, type Page } from './inbox-test';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -210,6 +210,7 @@ test.beforeAll(async () => {
   const env: Record<string, string> = {
     PATH: `${stubs}:${process.env.PATH ?? ''}`,
     HOME: root,
+    PLANNOTATOR_RELAY_URL: 'http://127.0.0.1:9',
     PLANNOTATOR_DATA_DIR: dataDir,
     PLANNOTATOR_INBOX_CONNECT: '0',
     PLANNOTATOR_UPDATE_CHECK: '0',
@@ -545,12 +546,13 @@ for (const colorScheme of ['light', 'dark'] as const) {
       await shot(page, `06-pr-diff-${colorScheme}`);
 
       // A message's links and code spans that name a file: the sentence stays a sentence, and resting on one shows its code.
+      // Each link opens its file beside the thread (approval "inbox-file-refs-open-viewer"), with a link's own icon only.
       await page.goto(`${world.url}#thread=${world.messageThread}`);
       const body = page.locator('.ib-body').first();
-      await expect(body.locator('[data-local-link="unavailable"]')).toHaveCount(3);
+      await expect(body.locator('[data-local-link="open"]')).toHaveCount(3);
       await expect(body.locator('[data-open-in-caret]')).toHaveCount(0);
       await expect(body.locator('[data-open-in]')).toHaveCount(0);
-      await expect(body.locator('[data-code-hover] svg')).toHaveCount(0);
+      await expect(body.locator('[data-code-hover] svg:not([data-local-link] svg)')).toHaveCount(0);
       await shot(page, `07-message-links-${colorScheme}`);
 
       const linkWindow = await codeWindowOf(page, body.locator('[data-code-hover="src/retry.ts"]'));
@@ -573,7 +575,7 @@ for (const colorScheme of ['light', 'dark'] as const) {
         await page.keyboard.press('Escape');
       }
       await expect(spanMenu).toHaveCount(0);
-      // A name that is no file here: no window, no error; the link then says why it is not a link.
+      // A name that is no file here: no window, no error.
       await noCodeWindow(page, body.locator('[data-code-hover="react.js"]'));
       await noCodeWindow(page, body.locator('[data-code-hover="src/gone.ts"]'));
       await expect(page.locator('[data-open-in-status].ib-err')).toHaveCount(0);
@@ -627,33 +629,21 @@ for (const colorScheme of ['light', 'dark'] as const) {
     const { context, page } = await windowAt(browser, 390, 844, colorScheme);
     try {
       await page.goto(`${world.url}#thread=${world.messageThread}`);
-      await expect(page.locator('.ib-body [data-local-link="unavailable"]').first()).toBeVisible();
+      await expect(page.locator('.ib-body [data-local-link="open"]').first()).toBeVisible();
       await expect(page.locator('[data-open-in-caret]')).toHaveCount(0);
       await shot(page, `08-phone-message-${colorScheme}`);
 
-      // No hover here: a tap shows the code as a sheet, with no app to open it in. Close, or the scrim, dismisses it.
-      const sheet = page.locator('[data-code-snippet-sheet]');
+      // No hover here: a tap on a file a message names opens it on the whole screen (approval
+      // "inbox-file-refs-open-viewer"), with no app to open it in. Back returns to the thread.
       await page.locator('.ib-body [data-code-hover="src/retry.ts"]').tap();
-      await expect(sheet).toBeVisible();
-      await expect(sheet.locator('[data-target-line]')).toContainText('charge(payout)');
-      await expect(sheet.locator('[data-open-in-caret]')).toHaveCount(0);
+      const named = page.locator('[data-referenced-file="src/retry.ts"]');
+      await expect(named).toBeVisible();
+      await expect(page.locator('[data-open-in-caret]')).toHaveCount(0);
       await page.waitForTimeout(250);
-      await shot(page, `27-phone-sheet-local-${colorScheme}`);
-      await sheet.locator('[data-code-hover-close]').tap();
-      await expect(sheet).toHaveCount(0);
-      await page.goto(`${world.url}#thread=${world.hoverThread}`);
-      await page.locator('.ib-body [data-code-hover="src/big-ledger.ts"]').first().tap();
-      await expect(sheet.locator('[data-target-line]')).toHaveCount(7);
-      await page.waitForTimeout(250);
-      await shot(page, `28-phone-sheet-line-range-${colorScheme}`);
-      await page.locator('[data-code-snippet-scrim]').click({ position: { x: 10, y: 10 } });
-      await expect(sheet).toHaveCount(0);
-      await page.goto(`${world.url}#thread=${world.pullThread}`);
-      await page.locator('.ib-body [data-code-hover="src/pr-only-schedule.ts"]').tap();
-      await expect(sheet.locator('[data-target-line]').first()).toContainText('schedule30');
-      await expect(sheet.locator('[data-code-hover-forge]')).toHaveAttribute('href', `https://github.com/acme/payouts/blob/${'8'.repeat(40)}/src/pr-only-schedule.ts#L30-L34`);
-      await page.waitForTimeout(250);
-      await shot(page, `29-phone-sheet-pr-${colorScheme}`);
+      await shot(page, `27-phone-named-file-${colorScheme}`);
+      await named.locator('[data-ref-back]').tap();
+      await expect(named).toHaveCount(0);
+      await expect(page.locator('.ib-body [data-local-link="open"]').first()).toBeVisible();
 
       await page.goto(`${world.url}#thread=${world.shapeThread}&shape=${world.shape}`);
       // The phone's dock has the count, not the word.
@@ -701,7 +691,8 @@ for (const colorScheme of ['light', 'dark'] as const) {
       await page.mouse.move(1, 1);
 
       // Ask AI's window stays over the review, and its answer's words behave the same, over the window.
-      await page.locator('section.ib-pane [data-ask-open]').click();
+      // Side on the message's words reopens the thread's chat (no Ask icon in the top bar, no row in the corner: the owner, 2026-11-09).
+      await sideOpensChat(page, message);
       const ask = page.locator('[data-chat-window]');
       await expect(ask).toContainText('from the table in');
       // Read once, the review's message is folded in the thread: the review opens by its address too.
@@ -740,36 +731,55 @@ for (const colorScheme of ['light', 'dark'] as const) {
     }
   });
 
-  test(`in a review on a phone, ${colorScheme}: a tap shows the sheet in the thread and in Ask AI`, async ({ browser }) => {
+  test(`in a review on a phone, ${colorScheme}: a tap opens the file the message names, and no Ask`, async ({ browser }) => {
     await world.handPull(world.prReviewThread);
     const { context, page } = await windowAt(browser, 390, 844, colorScheme);
     try {
       await page.goto(`${world.url}#thread=${world.prReviewThread}`);
       const sheet = page.locator('[data-code-snippet-sheet]');
+      // The agent's message: a tap opens the file it names on the whole screen (approval "inbox-file-refs-open-viewer").
       await page.locator('.ib-body', { hasText: 'Start at' }).locator('[data-code-hover="src/pr-only-schedule.ts"]').tap();
-      await expect(sheet.locator('[data-target-line]').first()).toContainText('schedule30');
-      await expect(sheet.locator('[data-code-hover-forge]')).toBeVisible();
-      await expect(sheet.locator('[data-open-in-caret]')).toHaveCount(0);
+      const named = page.locator('[data-referenced-file="src/pr-only-schedule.ts"]');
+      await expect(named).toBeVisible();
+      await expect(sheet).toHaveCount(0);
       await page.waitForTimeout(250);
       await shot(page, `33-phone-review-thread-${colorScheme}`);
-      await sheet.locator('[data-code-hover-close]').tap();
-      await expect(sheet).toHaveCount(0);
-      await page.locator('[data-ask-open]').first().tap();
-      const ask = page.locator('[data-chat-window]');
-      // Ask AI's window on a phone is the whole screen, as it is with Code review off.
-      await expect(ask).toBeVisible();
-      await expect.poll(async () => JSON.stringify(await ask.boundingBox())).toBe(JSON.stringify({ x: 0, y: 0, width: 390, height: 844 }));
-      await ask.locator('code', { hasText: 'src/retry.ts:1-3' }).tap();
-      await expect(sheet).toContainText('BACKOFF_MS');
-      await page.waitForTimeout(250);
-      await shot(page, `34-phone-review-ask-${colorScheme}`);
-      await sheet.locator('[data-code-hover-close]').tap();
-      await expect(sheet).toHaveCount(0);
-      await expect(ask).toBeVisible();
+      await named.locator('[data-ref-back]').tap();
+      await expect(named).toHaveCount(0);
+      // No Ask on a phone for now (the owner, 2026-11-09): no round button, so nothing opens Ask's window here.
+      await expect(page.locator('button[data-rf-corner], [data-rf-card="ask"], [data-ask-open]')).toHaveCount(0);
     } finally {
       await context.close();
     }
   });
+}
+
+/** Side on a message's words opens (or reopens) the thread's chat: a drag inside the words themselves, never from the margin. */
+async function sideOpensChat(page: Page, message: Locator, words = 'The schedule is in'): Promise<void> {
+  const side = page.locator('.annotation-toolbar [data-annotation-side]');
+  await expect(async () => {
+    const at = await message.first().evaluate((root, needle) => {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const i = node.textContent?.indexOf(needle) ?? -1;
+        if (i < 0) continue;
+        const range = document.createRange();
+        range.setStart(node, i);
+        range.setEnd(node, i + needle.length);
+        const r = range.getClientRects()[0]!;
+        return { x1: r.left + 1, x2: r.right - 1, y: r.top + r.height / 2 };
+      }
+      return null;
+    }, words);
+    expect(at, `"${words}" is on screen`).not.toBeNull();
+    await page.mouse.move(at!.x1, at!.y);
+    await page.mouse.down();
+    await page.mouse.move((at!.x1 + at!.x2) / 2, at!.y, { steps: 6 });
+    await page.mouse.move(at!.x2, at!.y, { steps: 6 });
+    await page.mouse.up();
+    await expect(side).toBeVisible({ timeout: 1_000 });
+  }).toPass({ timeout: 15_000 });
+  await side.click();
 }
 
 /** Press in the text before `words`, and drag past them into the text after. */
@@ -867,16 +877,15 @@ test('a saved comment across a link to a missing file: learning it is missing le
     await page.locator('[data-comment-popover]').getByRole('button', { name: 'Comment', exact: true }).click();
     await page.reload();
     await expect(link.locator('mark').first()).toBeVisible();
-    await link.hover();
-    // It says why on this first rest, and the highlight stays.
-    await expect(page.locator('[data-pn-tooltip]')).toBeVisible();
-    await expect(link.locator('mark').first()).toBeVisible();
-    await page.screenshot({ path: join(proofDir, '36-missing-link-mark-dark.png') });
-    await page.mouse.move(1, 1);
-    await expect(page.locator('[data-pn-tooltip]')).toHaveCount(0);
-    await link.hover();
-    await expect(page.locator('[data-pn-tooltip]')).toBeVisible();
-    await expect(link.locator('mark').first()).toBeVisible();
+    // The first rest learns the file is missing (no code shows), and the highlight stays; so does a second one.
+    for (const attempt of [1, 2]) {
+      await link.hover();
+      await page.waitForTimeout(500);
+      await expect(page.locator('[data-code-snippet-preview]'), `rest ${attempt}`).toHaveCount(0);
+      await expect(link.locator('mark').first(), `rest ${attempt}`).toBeVisible();
+      if (attempt === 1) await page.screenshot({ path: join(proofDir, '36-missing-link-mark-dark.png') });
+      await page.mouse.move(1, 1);
+    }
   } finally {
     await context.close();
   }
@@ -884,17 +893,18 @@ test('a saved comment across a link to a missing file: learning it is missing le
 
 test('Ask AI\'s window in a small window keeps its place, and a code span in it shows its code over it', async ({ browser }) => {
   await world.handPull(world.prReviewThread);
-  const { context, page } = await windowAt(browser, 700, 500, 'dark');
+  // 800 x 500: the smallest desktop layout (PHONE_QUERY is 767 px and under), where Side opens the chat.
+  const { context, page } = await windowAt(browser, 800, 500, 'dark');
   try {
     await page.goto(`${world.url}#thread=${world.prReviewThread}`);
-    await page.locator('section.ib-pane [data-ask-open]').click();
+    await sideOpensChat(page, page.locator('.ib-body', { hasText: 'Start at' }));
     const ask = page.locator('[data-chat-window]');
     await expect(ask).toContainText('from the table in');
     const box = (await ask.boundingBox())!;
     expect(box.y).toBeGreaterThanOrEqual(0);
     expect(box.x).toBeGreaterThanOrEqual(0);
     expect(box.y + box.height).toBeLessThanOrEqual(500);
-    expect(box.x + box.width).toBeLessThanOrEqual(700);
+    expect(box.x + box.width).toBeLessThanOrEqual(800);
     await expect(ask.getByRole('button').first()).toBeInViewport();
     const inAsk = await codeWindowOf(page, ask.locator('code', { hasText: 'src/retry.ts:1-3' }));
     // Over Ask AI's window: the window's own header is under it, not over it.
@@ -1002,7 +1012,8 @@ test('Code review off: no place offers one', async ({ browser }) => {
   });
   try {
     await page.goto(`${world.url}#thread=${world.messageThread}`);
-    await expect(page.locator('.ib-body [data-local-link="unavailable"]').first()).toBeVisible();
+    // Its links still open their files beside the thread (that needs no Code review); no code shows on a rest.
+    await expect(page.locator('.ib-body [data-local-link="open"]').first()).toBeVisible();
     await expect(page.locator('[data-open-in-caret]')).toHaveCount(0);
     await expect(page.locator('[data-code-hover]')).toHaveCount(0);
     await page.goto(`${world.url}#thread=${world.shapeThread}&shape=${world.shape}`);

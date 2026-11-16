@@ -129,8 +129,12 @@ export const GuideFileCard: React.FC<GuideFileCardProps> = ({
   // context gaps and an open comment.
   const [collapseToken, setCollapseToken] = useState(collapseAll?.token ?? 0);
   const [mountKey, setMountKey] = useState(0);
+  // The reveal a later Collapse all overrides. The renderer opens a folded file for the reveal it mounts with, so a
+  // renderer mounted again (below, or back in the outer window) gets no stale reveal; a new reveal still passes.
+  const [overriddenReveal, setOverriddenReveal] = useState<{ filePath: string; token: number } | null>(null);
   if (collapseAll && collapseAll.token !== collapseToken) {
     setCollapseToken(collapseAll.token);
+    setOverriddenReveal(revealTarget);
     if (collapseAll.collapsed !== collapsed) {
       setCollapsed(collapseAll.collapsed);
       setMountKey((key) => key + 1);
@@ -194,6 +198,8 @@ export const GuideFileCard: React.FC<GuideFileCardProps> = ({
     applyMeasured(next);
   }, [applyMeasured, stopWaiting, boxChrome]);
   const target = revealTarget?.filePath === file.path ? revealTarget : null;
+  const rendererTarget =
+    target && !(overriddenReveal?.filePath === target.filePath && overriddenReveal.token === target.token) ? target : null;
   // Folded: the header alone (a flush box has no padding around it).
   const collapsedHeight = flush ? COLLAPSED_HEIGHT - 16 : COLLAPSED_HEIGHT + (fitContent ? FIT_BOX_CHROME - 16 : 0);
   const renderedHeight = collapsed
@@ -229,6 +235,8 @@ export const GuideFileCard: React.FC<GuideFileCardProps> = ({
 
   // The page holds the reader's place: a box wholly above the viewport that changes height moves the page by as much.
   // Browsers do not do this for us here (and Safari never does): `.ib-gbody` opts out so that nothing corrects twice.
+  // At the end of the page a box that shrinks is the exception: the browser has already brought the page up with it
+  // (it cannot stay past its end), so moving it again would leave the reader that far above the end.
   const boxRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const box = boxRef.current;
@@ -239,7 +247,9 @@ export const GuideFileCard: React.FC<GuideFileCardProps> = ({
       height = box.offsetHeight;
       if (height === before) return;
       const page = pageOf(box);
-      if (box.getBoundingClientRect().top + before <= pageTopOf(page)) page.scrollTop += height - before;
+      if (box.getBoundingClientRect().top + before > pageTopOf(page)) return;
+      if (height < before && page.scrollHeight - page.clientHeight - page.scrollTop < 1) return;
+      page.scrollTop += height - before;
     });
     observer.observe(box);
     return () => observer.disconnect();
@@ -306,7 +316,7 @@ export const GuideFileCard: React.FC<GuideFileCardProps> = ({
             key={mountKey}
             {...getDiffRendererProps({ file, focused })}
             files={fileList}
-            fileScrollTarget={target}
+            fileScrollTarget={rendererTarget}
             fileOrder="list"
             mountCollapsed={collapsed}
             // The page owns the position of a box that scrolls with it.

@@ -46,7 +46,7 @@
  * 2x PNGs land in PLANNOTATOR_E2E_SHOTS_DIR (default .local/proof/show-me).
  */
 
-import { expect, test, type Browser, type BrowserContext, type Locator, type Page } from '@playwright/test';
+import { expect, test, type Browser, type BrowserContext, type Locator, type Page } from './inbox-test';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -56,6 +56,7 @@ import { startScriptedAskAgent, type ScriptedAskAgent } from '../helpers/inbox-a
 import { NO_BROWSER } from '../helpers/no-browser';
 import { markTourDecided } from '../helpers/tour-decided';
 import { inboxScratch, rememberInboxOf, removeInboxScratch } from './inbox-scratch';
+import { diffRowBox } from './diff-row-box';
 
 const repo = resolve(__dirname, '../..');
 const binary = resolve(process.env.PLANNOTATOR_E2E_BINARY ?? join(repo, '.local/plannotator'));
@@ -352,7 +353,7 @@ async function pickChapter(page: Page, row: number | 'overview'): Promise<void> 
 /** A real crop of a diff's lines, from the first added line down, for the scripted agent's board. */
 async function cropLines(page: Page, shell: Locator, path: string): Promise<void> {
   await shell.scrollIntoViewIfNeeded();
-  const line = (await shell.locator('[data-line-type="change-addition"]').first().boundingBox())!;
+  const line = await diffRowBox(shell.locator('[data-line-type="change-addition"]').first());
   const box = (await shell.boundingBox())!;
   await page.screenshot({ path, clip: { x: box.x + 6, y: line.y, width: box.width - 12, height: Math.min(200, box.y + box.height - line.y) } });
 }
@@ -1184,7 +1185,10 @@ test('a Change it while the session answers another thread: no storm of requests
     const readsBefore = reads.length;
     await second.waitForTimeout(7_000);
     expect(posts.length).toBeLessThanOrEqual(3);
-    expect(reads.length - readsBefore).toBeLessThanOrEqual(6);
+    // The window's readers share one read of the thread's Ask per event (ask/askReads.ts): each try is one read (its
+    // look, whose answer the wake reuses), and the three posts allow two tries here; two more for news that comes
+    // while a try is on its way (the other readers read once then). CI measures 2.
+    expect(reads.length - readsBefore).toBeLessThanOrEqual(4);
     expect(wakes()).toBe(0);
 
     // That turn ends: the person's Change it goes through, once.
