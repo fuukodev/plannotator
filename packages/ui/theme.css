@@ -1787,14 +1787,14 @@ body:has([data-popout="true"]) [data-sidebar-tabs="true"] {
 .ai-markdown li:where(:not([data-chat-mermaid] *)) {
   margin: 0.15rem 0;
 }
-.ai-markdown code:where(:not([data-chat-mermaid] *)) {
+.ai-markdown code:where(:not([data-chat-mermaid] *), [data-chat-mermaid-fallback] *) {
   background: color-mix(in oklab, var(--muted) 70%, transparent);
   border: 1px solid color-mix(in oklab, var(--border) 45%, transparent);
   border-radius: 4px;
   padding: 0.05rem 0.3rem;
   font-size: 0.9em;
 }
-.ai-markdown pre:where(:not([data-chat-mermaid] *)) {
+.ai-markdown pre:where(:not([data-chat-mermaid] *), [data-chat-mermaid-fallback] *) {
   background: color-mix(in oklab, var(--muted) 55%, transparent);
   border: 1px solid color-mix(in oklab, var(--border) 45%, transparent);
   border-radius: 6px;
@@ -1802,7 +1802,7 @@ body:has([data-popout="true"]) [data-sidebar-tabs="true"] {
   overflow-x: auto;
   margin: 0.5rem 0;
 }
-.ai-markdown pre code:where(:not([data-chat-mermaid] *)) {
+.ai-markdown pre code:where(:not([data-chat-mermaid] *), [data-chat-mermaid-fallback] *) {
   background: transparent;
   border: 0;
   padding: 0;

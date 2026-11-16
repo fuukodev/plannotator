@@ -23,4 +23,8 @@ Markdown previews and Ask AI answers use `ReviewDiagramFence`. The review server
 
 The review entry must not bundle Mermaid or Graphviz. Keep the shared chat layer independent of the UI diagram adapter. See [the code-review guide](../../docs/agent-guides/code-review.md#mermaid-in-ask-ai-answers) and `tests/entry-assets.test.ts`.
 
+Ask AI follows the latest question within its file group, including when an asynchronous diagram changes the answer height. Scrolling away pauses following. Returning within 24px resumes following. Explicit history navigation pauses following before the scroll starts.
+
+Source fallbacks retain ordinary code styling and horizontal scrolling while an engine loads or fails.
+
 Copying or saving an answer preserves the original Markdown. This package does not implement an AI provider.

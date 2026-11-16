@@ -37,7 +37,8 @@ function MermaidSlot({ id, slot, renderMermaid }: {
   renderMermaid: ChatMermaidRenderer;
 }) {
   const inner = useMemo(() => ({ __html: slot.fallbackHtml }), [slot.fallbackHtml]);
-  const fallback = useMemo(() => <div dangerouslySetInnerHTML={inner} />, [inner]);
+  // Source fallbacks retain normal code styling inside the diagram CSS boundary.
+  const fallback = useMemo(() => <div data-chat-mermaid-fallback="" dangerouslySetInnerHTML={inner} />, [inner]);
   return (
     <div data-chat-mermaid="">
       {/* Only a real source replacement resets the engine's last-good SVG.
@@ -77,15 +78,20 @@ function projectMarkup(markup: ChatMermaidMarkup, prefix: string, renderMermaid:
   }
 
   const children = (parent: ParentNode, path: string): ReactNode[] => {
-    let elementIndex = 0;
+    const tagIndexes = new Map<string, number>();
     return Array.from(parent.childNodes, (node) => {
       if (node.nodeType === 3) return node.textContent;
       if (node.nodeType !== 1) return null;
       const element = node as Element;
-      const at = `${path}-${elementIndex++}`;
+      const tag = element.tagName.toLowerCase();
+      // Marked wraps text in <p> when a streamed list becomes loose. Count
+      // siblings of the same tag so those wrappers cannot re-key a nested list
+      // or quote and discard an unchanged diagram's viewer state.
+      const index = tagIndexes.get(tag) ?? 0;
+      tagIndexes.set(tag, index + 1);
+      const at = `${path}-${tag}-${index}`;
       const slot = replacements.get(element);
       if (slot) return <MermaidSlot key={`mermaid-${slot.index}`} id={`${prefix}-${slot.index}`} slot={slot} renderMermaid={renderMermaid} />;
-      const tag = element.tagName.toLowerCase();
       const props: Record<string, unknown> = { key: `html-${at}` };
       for (const attribute of Array.from(element.attributes)) {
         const name = ATTRIBUTE_NAMES[attribute.name];

@@ -1,5 +1,6 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { hasPendingBusyChoice, type AIChatEntry, type PendingPermission } from '../../hooks/useAIChat';
+import { useChatScroll } from '../../hooks/useChatScroll';
 import { findSessionBridge, hasNonInterruptibleSession, type AIProviderOption } from '../../utils/aiProvider';
 import { formatRelativeTime, renderChatMarkdown } from '../../utils/aiChatFormat';
 import type { ChatMermaidRenderer } from '../../utils/chatMermaid';
@@ -93,14 +94,7 @@ export const DocumentAIChatPanel: React.FC<DocumentAIChatPanelProps> = ({
   const listenOnly = hasNonInterruptibleSession(aiProviders);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [generalInput, setGeneralInput] = useState('');
-  const latestMessage = messages[messages.length - 1];
-  const latestResponseText = latestMessage?.response.text ?? '';
-
-  useEffect(() => {
-    if (!scrollRef.current) return;
-    const last = scrollRef.current.querySelector('[data-ai-message]:last-child');
-    last?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [messages.length, latestResponseText]);
+  useChatScroll(null, scrollRef);
 
   const rootRef = useRef<HTMLDivElement>(null);
   const handleNewChat = useCallback(() => {

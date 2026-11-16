@@ -1,7 +1,8 @@
-import { createContext, memo, useContext, useEffect, useMemo, useRef } from 'react';
+import { createContext, memo, useContext, useMemo, useRef } from 'react';
 import type * as React from 'react';
 
 import { usePrefersReducedMotion } from '../../hooks/usePrefersReducedMotion';
+import { useChatScroll } from '../../hooks/useChatScroll';
 import { cn } from '../../lib/utils';
 import { chatTextContentRenderer } from './chatMarkdown';
 import type { ChatMermaidRenderer } from '../../utils/chatMermaid';
@@ -68,9 +69,9 @@ const BODY_PROSE = cn(
   // :where keeps the old specificity while leaving diagram labels, controls
   // and source panes to the diagram viewer's own styles.
   '[&_p:where(:not([data-chat-mermaid]_*))]:mb-2 [&_p:last-child:where(:not([data-chat-mermaid]_*))]:mb-0',
-  '[&_pre:where(:not([data-chat-mermaid]_*))]:mb-2 [&_pre:where(:not([data-chat-mermaid]_*))]:overflow-x-auto',
+  '[&_pre:where(:not([data-chat-mermaid]_*),[data-chat-mermaid-fallback]_*)]:mb-2 [&_pre:where(:not([data-chat-mermaid]_*),[data-chat-mermaid-fallback]_*)]:overflow-x-auto',
   '[&_ol:where(:not([data-chat-mermaid]_*))]:mb-2 [&_ol:where(:not([data-chat-mermaid]_*))]:list-decimal [&_ol:where(:not([data-chat-mermaid]_*))]:pl-5 [&_ul:where(:not([data-chat-mermaid]_*))]:mb-2 [&_ul:where(:not([data-chat-mermaid]_*))]:list-disc [&_ul:where(:not([data-chat-mermaid]_*))]:pl-5 [&_li:where(:not([data-chat-mermaid]_*))]:mb-1',
-  '[&_code:where(:not([data-chat-mermaid]_*))]:font-mono [&_code:where(:not([data-chat-mermaid]_*))]:text-xs [&_code:where(:not([data-chat-mermaid]_*))]:text-primary',
+  '[&_code:where(:not([data-chat-mermaid]_*),[data-chat-mermaid-fallback]_*)]:font-mono [&_code:where(:not([data-chat-mermaid]_*),[data-chat-mermaid-fallback]_*)]:text-xs [&_code:where(:not([data-chat-mermaid]_*),[data-chat-mermaid-fallback]_*)]:text-primary',
   '[&_strong:where(:not([data-chat-mermaid]_*))]:font-semibold',
   '[&_blockquote:where(:not([data-chat-mermaid]_*))]:mb-2 [&_blockquote:where(:not([data-chat-mermaid]_*))]:border-l-2 [&_blockquote:where(:not([data-chat-mermaid]_*))]:border-border-subtle [&_blockquote:where(:not([data-chat-mermaid]_*))]:pl-2.5 [&_blockquote:where(:not([data-chat-mermaid]_*))]:italic [&_blockquote:where(:not([data-chat-mermaid]_*))]:text-muted-foreground',
   '[&_a:where(:not([data-chat-mermaid]_*))]:text-primary',
@@ -408,34 +409,13 @@ export function ChatTranscript<Part extends ChatMessagePart = ChatMessagePart>({
     chatTurnHasOutput(arriving, reducedMotion && running);
   const pending = running && !answerStarted && pendingLine !== false;
 
-  // Follow the output: stick to the live edge, released by scrolling away,
-  // re-armed at the edge.
   const ownRef = useRef<HTMLDivElement | null>(null);
   const paneRef = scrollRef ?? ownRef;
-  const atBottomRef = useRef(true);
-  useEffect(() => {
-    const node = paneRef.current;
-    if (node !== null && atBottomRef.current) node.scrollTop = node.scrollHeight;
-  }, [messages, statusLine, pending, paneRef]);
-  // The pane also follows when its own box shrinks (a growing composer).
-  useEffect(() => {
-    const node = paneRef.current;
-    if (node === null || typeof ResizeObserver !== 'function') return;
-    const observer = new ResizeObserver(() => {
-      if (atBottomRef.current) node.scrollTop = node.scrollHeight;
-    });
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [paneRef]);
-
-  // An image grows the text with no change to `messages`, and the observer above
-  // watches the pane's box, not what is in it. `load` does not bubble, so this
-  // takes it on the way down. Only with `richMarkdown`: otherwise no image in text
-  // can load, and a host's own image must not move the pane.
-  const followImage = () => {
-    const node = paneRef.current;
-    if (node !== null && atBottomRef.current) node.scrollTop = node.scrollHeight;
-  };
+  const { refresh: followImage } = useChatScroll(paneRef, null, {
+    // Default hosts retain their image contract. Rich text or Mermaid opts
+    // into observing actual message growth without changing overlay layout.
+    observeContent: richMarkdown || renderMermaid !== null,
+  });
 
   // An assistant turn that has painted nothing yet would be a bare name row,
   // so it is dropped and the pending turn stands in its place.
@@ -446,10 +426,6 @@ export function ChatTranscript<Part extends ChatMessagePart = ChatMessagePart>({
   const pane = (
     <div
       ref={paneRef}
-      onScroll={(event) => {
-        const node = event.currentTarget;
-        atBottomRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 24;
-      }}
       onLoadCapture={richMarkdown ? followImage : undefined}
       // Focusable, so a keyboard user can Tab in and arrow-scroll. Deliberately
       // not a live region: streamed deltas would announce token by token.

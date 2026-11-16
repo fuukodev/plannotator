@@ -1,6 +1,7 @@
 import React, { useRef, useEffect, useState, useMemo, useCallback, memo } from 'react';
 import type { AIChatEntry, PendingPermission } from '../hooks/useAIChat';
 import { hasPendingBusyChoice } from '@plannotator/ui/hooks/useAIChat';
+import { useChatScroll } from '@plannotator/ui/hooks/useChatScroll';
 import { renderChatMarkdown } from '../utils/renderChatMarkdown';
 import type { ChatMermaidRenderer } from '@plannotator/ui/utils/chatMermaid';
 import { formatLineRange } from '../utils/formatLineRange';
@@ -80,6 +81,14 @@ export const AITab: React.FC<AITabProps> = ({
   // A session that is never interrupted (T3 Code): Stop only stops listening.
   const listenOnly = hasNonInterruptibleSession(aiProviders);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const latestQuestionId = messages[messages.length - 1]?.question.id;
+  const { pauseFollowing } = useChatScroll(null, scrollRef, {
+    // The newest answer can precede another file group or general questions.
+    // Follow that answer, not the end of the entire grouped transcript.
+    target: () => latestQuestionId
+      ? scrollRef.current?.querySelector<HTMLElement>(`[data-question-id="${CSS.escape(latestQuestionId)}"]`) ?? null
+      : null,
+  });
   // File chat groups default to expanded; this tracks the ones the user has
   // explicitly collapsed (inverted set), so a freshly-shown file's chat is
   // visible without a click.
@@ -131,6 +140,7 @@ export const AITab: React.FC<AITabProps> = ({
   // Scroll to specific question and flash-highlight its file group header
   useEffect(() => {
     if (!scrollToQuestionId || !scrollRef.current) return;
+    pauseFollowing();
 
     const msg = messages.find(m => m.question.id === scrollToQuestionId);
     const filePath = msg?.question.filePath;
@@ -150,18 +160,7 @@ export const AITab: React.FC<AITabProps> = ({
         if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }, 300);
     }
-  }, [scrollToQuestionId]);
-
-  // Auto-scroll when new messages arrive or the latest response streams in.
-  const latestMessage = messages[messages.length - 1];
-  const latestResponseText = latestMessage?.response.text ?? '';
-  useEffect(() => {
-    if (!scrollRef.current) return;
-    if (latestMessage) {
-      const latestQA = scrollRef.current.querySelector(`[data-question-id="${CSS.escape(latestMessage.question.id)}"]`);
-      latestQA?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-    }
-  }, [latestMessage?.question.id, latestResponseText, messages.length]);
+  }, [scrollToQuestionId, pauseFollowing]);
 
   const toggleFile = (filePath: string) => {
     setCollapsedFiles(prev => {

@@ -108,8 +108,10 @@ describe.if(hasDom)('chat Mermaid DOM bridge', () => {
     expect(host!.querySelectorAll('[data-chat-mermaid]')).toHaveLength(1);
   });
 
-  test('a completed diagram survives later deltas, another diagram and a loose-list change', async () => {
-    const first = `- item\n  \`\`\`mermaid\n  flowchart LR\n    A --> B\n  \`\`\`\n`;
+  test.each([
+    `- item\n  \`\`\`mermaid\n  flowchart LR\n    A --> B\n  \`\`\`\n`,
+    `- parent\n  - child\n    \`\`\`mermaid\n    flowchart LR\n      A --> B\n    \`\`\`\n`,
+  ])('a diagram survives streamed loose-list changes: %s', async (first) => {
     await draw(<ChatMarkdown text={first} streaming renderMermaid={renderDiagram} />);
     const svg = host!.querySelector('svg');
     const id = svg?.getAttribute('data-test-diagram');
